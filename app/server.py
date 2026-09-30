@@ -106,9 +106,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             value = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
-            raise services.AppError(400, "JSON invalide.", "invalid_json") from exc
+            raise services.AppError(400, "Invalid JSON.", "invalid_json") from exc
         if not isinstance(value, dict):
-            raise services.AppError(400, "Le corps JSON doit être un objet.", "invalid_json")
+            raise services.AppError(400, "The JSON body must be an object.", "invalid_json")
         return value
 
     def _client_key(self, email: str) -> str:
@@ -127,13 +127,13 @@ class Handler(BaseHTTPRequestHandler):
             with db.connection(self.server.db_path) as conn:
                 session, user = auth.load_session(conn, self.headers.get("Cookie"))
                 if user is None or session is None:
-                    return self._error(401, "Authentification requise.", "unauthenticated")
+                    return self._error(401, "Authentication required.", "unauthenticated")
                 if self.command in MUTATING:
                     csrf = self.headers.get("X-CSRF-Token")
                     if not csrf or csrf != session["csrf_token"]:
                         services.emit_log(conn, user["id"], "csrf_failed", "request", path, technical=True)
                         conn.commit()
-                        return self._error(403, "Jeton CSRF invalide.", "csrf")
+                        return self._error(403, "Invalid CSRF token.", "csrf")
                 if path == "/api/logout" and self.command == "POST":
                     auth.destroy_session(conn, self.headers.get("Cookie"))
                     return self._json(200, {"ok": True}, {"Set-Cookie": auth.expired_cookie_header()})
@@ -144,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             if (os.environ.get("BIGD_DEBUG") or os.environ.get("DOCUMENT_GOV_DEBUG")) == "1":
                 raise
-            self._error(500, f"Erreur serveur: {exc}", "server_error")
+            self._error(500, f"Server error: {exc}", "server_error")
 
     def _login(self) -> None:
         payload = self._read_json()
@@ -152,12 +152,12 @@ class Handler(BaseHTTPRequestHandler):
         password = payload.get("password") or ""
         key = self._client_key(email)
         if self.server.login_limiter.is_limited(key):
-            return self._error(429, "Trop de tentatives. Réessayez plus tard.", "rate_limited")
+            return self._error(429, "Too many attempts. Try again later.", "rate_limited")
         with db.connection(self.server.db_path) as conn:
             user = conn.execute("SELECT * FROM users WHERE email = ? AND active = 1", (email,)).fetchone()
             if user is None or not auth.verify_password(password, user["password_hash"]):
                 self.server.login_limiter.register_failure(key)
-                return self._error(401, "Identifiants invalides.", "bad_credentials")
+                return self._error(401, "Invalid credentials.", "bad_credentials")
             token, csrf = auth.create_session(conn, user["id"])
             conn.commit()
             self.server.login_limiter.reset(key)
@@ -170,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dev_users(self) -> None:
         if os.environ.get("APP_ENV") == "production" or os.environ.get("DEMO_USER_SELECTOR", "1") != "1":
-            return self._error(404, "Indisponible.", "not_found")
+            return self._error(404, "Unavailable.", "not_found")
         with db.connection(self.server.db_path) as conn:
             users = conn.execute("SELECT id, name, email FROM users WHERE active = 1 ORDER BY name").fetchall()
             self._json(200, {"users": [dict(row) for row in users], "demo_password": "demo1234"})
@@ -213,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
             return services.mark_all_notifications_read(conn, user)
         if path == "/api/scheduler/run" and self.command == "POST":
             if not perm.can_administer(conn, user):
-                raise services.AppError(403, "Planificateur réservé aux administrateurs.", "forbidden")
+                raise services.AppError(403, "Scheduler is reserved for administrators.", "forbidden")
             return services.run_scheduler(conn)
         if path == "/api/admin/users" and self.command == "POST":
             return services.admin_create_user(conn, user, payload, auth.hash_password(payload.get("password") or "ChangeMe123!"))
@@ -249,14 +249,14 @@ class Handler(BaseHTTPRequestHandler):
             match = re.match(pattern, path)
             if method == self.command and match:
                 return callback(*match.groups())
-        raise services.AppError(404, "Route API introuvable.", "not_found")
+        raise services.AppError(404, "API route not found.", "not_found")
 
     def _serve_static(self, path: str) -> None:
         if path in ("", "/"):
             path = "/index.html"
         requested = (WEB_DIR / path.lstrip("/")).resolve()
         if not str(requested).startswith(str(WEB_DIR.resolve())) or not requested.exists() or requested.is_dir():
-            self._error(404, "Page introuvable.", "not_found")
+            self._error(404, "Page not found.", "not_found")
             return
         body = requested.read_bytes()
         mime = mimetypes.guess_type(str(requested))[0] or "application/octet-stream"
@@ -273,16 +273,16 @@ def make_server(host: str, port: int, db_path: str | os.PathLike[str]) -> BigDSe
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=f"Serveur {APP_TITLE}")
+    parser = argparse.ArgumentParser(description=f"{APP_TITLE} server")
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--db", default=str(db.db_path_from_env()))
-    parser.add_argument("--migrate", action="store_true", help="Applique les migrations avant de démarrer")
+    parser.add_argument("--migrate", action="store_true", help="Apply migrations before starting")
     args = parser.parse_args(argv)
     if args.migrate:
         db.migrate(args.db)
     server = make_server(args.host, args.port, args.db)
-    print(f"{APP_NAME} lancé sur http://{args.host}:{args.port}", flush=True)
+    print(f"{APP_NAME} running at http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

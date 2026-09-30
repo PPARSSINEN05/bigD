@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 64" role="img" aria-labelledby="title desc">
+  <title id="title">BigD, dream Big logo</title>
+  <desc id="desc">BigD wordmark with the dream Big tagline.</desc>
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#16212f"/>
+  <path d="M14 44V14h16c7 0 11 4 11 9 0 3-1 5-4 7 4 1 7 4 7 9 0 6-5 9-13 9H14z" fill="#ffffff"/>
+  <path d="M22 26h7c3 0 5-1 5-4 0-2-2-4-5-4h-7v8zm0 14h9c4 0 6-2 6-5s-2-5-7-5h-8v10z" fill="#16212f"/>
+  <path d="M48 15v33h-6V15h6z" fill="#2f7a54"/>
+  <text x="78" y="29" font-family="Arial, sans-serif" font-size="24" font-weight="800" fill="#17202a">BigD</text>
+  <text x="79" y="49" font-family="Arial, sans-serif" font-size="15" font-weight="600" fill="#2f7a54">dream Big</text>
+</svg>

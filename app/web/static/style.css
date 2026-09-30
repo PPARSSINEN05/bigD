@@ -117,6 +117,23 @@ label {
   font-size: 1rem;
 }
 
+.brand-logo {
+  width: 154px;
+  max-width: 100%;
+  height: 44px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.brand-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .brand-mark {
   width: 36px;
   height: 36px;

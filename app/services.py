@@ -44,17 +44,17 @@ ACTIVE_AUDIT_STATUSES = {
 
 
 NOTIFICATION_LABELS = {
-    "REVIEW_REQUEST": "Demande de review",
-    "INTERVENTION_REQUEST": "Demande d'intervention",
-    "TASK_ASSIGNED": "Tâche attribuée",
-    "AUDIT_DUE": "Audit à réaliser",
-    "AUDIT_OVERDUE": "Audit en retard",
-    "ISSUE_CREATED": "Nouveau signalement",
-    "AUDIT_RESULT": "Décision attendue",
-    "CORRECTION_REQUEST": "Corrections demandées",
-    "REVIEW_APPROVED": "Avis de review favorable",
-    "VALIDATION": "Validation enregistrée",
-    "PUBLISHED": "Publication validée",
+    "REVIEW_REQUEST": "Review request",
+    "INTERVENTION_REQUEST": "Intervention request",
+    "TASK_ASSIGNED": "Task assigned",
+    "AUDIT_DUE": "Audit due",
+    "AUDIT_OVERDUE": "Audit overdue",
+    "ISSUE_CREATED": "New issue",
+    "AUDIT_RESULT": "Decision required",
+    "CORRECTION_REQUEST": "Corrections requested",
+    "REVIEW_APPROVED": "Review approved",
+    "VALIDATION": "Validation recorded",
+    "PUBLISHED": "Publication approved",
 }
 
 
@@ -99,7 +99,7 @@ def _overdue_days(value: str | None) -> int:
 
 def _version_text(row: Row | dict | None, *, target: bool = False) -> str:
     if not row:
-        return "Non publié"
+        return "Unpublished"
     major_key = "target_major" if target else "major"
     minor_key = "target_minor" if target else "minor"
     return f"v{row[major_key]}.{row[minor_key]}"
@@ -109,29 +109,29 @@ def _proposal_kind(row: Row | dict | None) -> str:
     if not row:
         return ""
     if row["change_type"] == "EDIT":
-        return "Mise à jour"
+        return "Minor update"
     if row["change_type"] == "NEW_VERSION":
-        return "Nouvelle version"
-    return "Première publication"
+        return "Major version"
+    return "First publication"
 
 
 def _status_word(status: str) -> str:
     return {
-        "DRAFT": "Brouillon",
-        "CHALLENGE": "En revue",
-        "UP": "Publié",
-        "CANCELLED": "Annulé",
-        "TO_DO": "À faire",
-        "IN_PROGRESS": "En cours",
-        "AWAITING_OWNER_DECISION": "Décision owner",
-        "REMEDIATION_IN_PROGRESS": "Correction",
-        "AWAITING_FINAL_VALIDATION": "Validation finale",
-        "CLOSED": "Clôturé",
-        "OPEN": "Ouvert",
-        "UNDER_REVIEW": "À décider",
-        "ACCEPTED": "Accepté",
-        "RESOLVED": "Résolu",
-        "DISMISSED": "Écarté",
+        "DRAFT": "Draft",
+        "CHALLENGE": "In review",
+        "UP": "Published",
+        "CANCELLED": "Cancelled",
+        "TO_DO": "To do",
+        "IN_PROGRESS": "In progress",
+        "AWAITING_OWNER_DECISION": "Owner decision",
+        "REMEDIATION_IN_PROGRESS": "Remediation",
+        "AWAITING_FINAL_VALIDATION": "Final validation",
+        "CLOSED": "Closed",
+        "OPEN": "Open",
+        "UNDER_REVIEW": "To decide",
+        "ACCEPTED": "Accepted",
+        "RESOLVED": "Resolved",
+        "DISMISSED": "Dismissed",
     }.get(status, status)
 
 
@@ -146,7 +146,7 @@ def add_frequency(last_validation_at: str, value: int, unit: str) -> str:
         day = min(base.day, monthrange(year, month)[1])
         result = base.replace(year=year, month=month, day=day)
     else:
-        raise AppError(400, "Unité de fréquence inconnue.", "invalid_frequency")
+        raise AppError(400, "Unknown frequency unit.", "invalid_frequency")
     return result.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
@@ -184,39 +184,39 @@ def emit_log(
 def _active_user(conn: Connection, user_id: int) -> Row:
     user = perm.user_by_id(conn, user_id)
     if user is None or user["active"] != 1:
-        raise AppError(404, "Utilisateur introuvable ou inactif.", "user_not_found")
+        raise AppError(404, "User not found or inactive.", "user_not_found")
     return user
 
 
 def _document_for_action(conn: Connection, user: Row, document_id: str, action: str = "view") -> Row:
     doc = perm.document_by_id(conn, document_id)
     if doc is None:
-        raise AppError(404, "Document introuvable.", "document_not_found")
+        raise AppError(404, "Document not found.", "document_not_found")
     if action == "view" and not perm.can_view_document(conn, user, doc):
         emit_log(conn, user["id"], "forbidden_view", "document", document_id, document_id=document_id, technical=True)
-        raise AppError(403, "Accès refusé à ce document.", "forbidden")
+        raise AppError(403, "Access denied for this document.", "forbidden")
     if action == "manage" and not perm.can_manage_document(conn, user, doc):
         emit_log(conn, user["id"], "forbidden_manage", "document", document_id, document_id=document_id, technical=True)
-        raise AppError(403, "Action réservée au data owner ou à un gestionnaire explicitement autorisé.", "forbidden")
+        raise AppError(403, "This action is reserved for the data owner or an explicitly authorized manager.", "forbidden")
     if action == "contribute" and not perm.can_contribute(conn, user, doc):
         emit_log(conn, user["id"], "forbidden_contribute", "document", document_id, document_id=document_id, technical=True)
-        raise AppError(403, "Vous ne pouvez pas contribuer à ce document.", "forbidden")
+        raise AppError(403, "You cannot contribute to this document.", "forbidden")
     if action == "review" and not perm.can_review(conn, user, doc):
         emit_log(conn, user["id"], "forbidden_review", "document", document_id, document_id=document_id, technical=True)
-        raise AppError(403, "Vous ne pouvez pas reviewer ce document.", "forbidden")
+        raise AppError(403, "You cannot review this document.", "forbidden")
     if action == "audit" and not perm.can_audit(conn, user, doc):
         emit_log(conn, user["id"], "forbidden_audit", "document", document_id, document_id=document_id, technical=True)
-        raise AppError(403, "Vous ne pouvez pas auditer ce document.", "forbidden")
+        raise AppError(403, "You cannot audit this document.", "forbidden")
     return doc
 
 
 def _version_for_user(conn: Connection, user: Row, version_id: int) -> tuple[Row, Row]:
     version = conn.execute("SELECT * FROM document_versions WHERE id = ?", (version_id,)).fetchone()
     if version is None:
-        raise AppError(404, "Version introuvable.", "version_not_found")
+        raise AppError(404, "Version not found.", "version_not_found")
     doc = _document_for_action(conn, user, version["document_id"], "view")
     if version["status"] != "UP" and not perm.has_workflow_access(conn, user["id"], doc):
-        raise AppError(403, "Accès refusé à cette proposition.", "forbidden")
+        raise AppError(403, "Access denied for this proposal.", "forbidden")
     return version, doc
 
 
@@ -371,55 +371,55 @@ def _enrich_document_item(conn: Connection, row: Row) -> dict:
 
     if row["archived_at"] is not None:
         item["publication_state"] = "archived"
-        item["publication_label"] = f"Archivé · Dernière version {_version_text(current)}"
+        item["publication_label"] = f"Archived · Last version {_version_text(current)}"
     elif current:
         item["publication_state"] = "published"
-        item["publication_label"] = f"Publié · {_version_text(current)}"
+        item["publication_label"] = f"Published · {_version_text(current)}"
     elif proposal and proposal["status"] == "CHALLENGE":
         item["publication_state"] = "unpublished"
-        item["publication_label"] = "En revue · Première publication"
+        item["publication_label"] = "In review · First publication"
     elif proposal:
         item["publication_state"] = "draft"
-        item["publication_label"] = "Brouillon initial · Non publié"
+        item["publication_label"] = "Initial draft · Unpublished"
     else:
         item["publication_state"] = "unpublished"
-        item["publication_label"] = "Non publié"
+        item["publication_label"] = "Unpublished"
 
     if proposal:
         item["proposal_state"] = proposal["status"].lower()
-        state_word = "En revue" if proposal["status"] == "CHALLENGE" else "Brouillon"
+        state_word = "In review" if proposal["status"] == "CHALLENGE" else "Draft"
         if proposal["change_type"] == "NEW_VERSION" and proposal["status"] == "DRAFT":
-            state_word = "En préparation"
+            state_word = "In preparation"
         item["proposal_label"] = f"{_proposal_kind(proposal)} {_version_text(proposal, target=True)} · {state_word}"
     else:
         item["proposal_state"] = "none"
-        item["proposal_label"] = "Aucune proposition active"
+        item["proposal_label"] = "No active proposal"
 
     if row["archived_at"] is not None:
         item["audit_state"] = "archived"
-        item["audit_label"] = "Audit arrêté"
+        item["audit_label"] = "Audit stopped"
     elif audit and audit["status"] in ("TO_DO", "IN_PROGRESS"):
         item["audit_state"] = "in_progress"
-        prefix = "Audit en cours" if audit["status"] == "IN_PROGRESS" else "Audit à réaliser"
-        item["audit_label"] = f"{prefix} · retard {item['overdue_days']} j" if overdue else prefix
+        prefix = "Audit in progress" if audit["status"] == "IN_PROGRESS" else "Audit due"
+        item["audit_label"] = f"{prefix} · {item['overdue_days']} d overdue" if overdue else prefix
     elif audit and audit["status"] == "AWAITING_OWNER_DECISION":
         item["audit_state"] = "decision"
-        item["audit_label"] = "Validation attendue"
+        item["audit_label"] = "Validation required"
     elif audit:
         item["audit_state"] = "in_progress"
         item["audit_label"] = _status_word(audit["status"])
     elif overdue:
         item["audit_state"] = "overdue"
-        item["audit_label"] = f"Audit en retard de {item['overdue_days']} jours"
+        item["audit_label"] = f"Audit overdue by {item['overdue_days']} days"
     elif upcoming:
         item["audit_state"] = "upcoming"
-        item["audit_label"] = "Audit à prévoir"
+        item["audit_label"] = "Audit due soon"
     elif current:
         item["audit_state"] = "up_to_date"
-        item["audit_label"] = "Audit à jour"
+        item["audit_label"] = "Audit up to date"
     else:
         item["audit_state"] = "not_planned"
-        item["audit_label"] = "Audit non planifié"
+        item["audit_label"] = "Audit not planned"
 
     source = current or proposal
     item["source_location_type"] = source["source_location_type"] if source else ""
@@ -550,8 +550,8 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
                 {
                     "key": f"audit-overdue:{doc['id']}",
                     "kind": "audit",
-                    "action": "Réaliser l'audit",
-                    "action_label": "Réaliser l'audit",
+                    "action": "Perform audit",
+                    "action_label": "Perform audit",
                     "document_id": doc["id"],
                     "document_title": doc["title"],
                     "version": doc["publication_label"],
@@ -574,8 +574,8 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
                     {
                         "key": f"proposal:{proposal['id']}",
                         "kind": "validation",
-                        "action": "Examiner la proposition",
-                        "action_label": "Examiner la proposition",
+                        "action": "Review proposal",
+                        "action_label": "Review proposal",
                         "document_id": doc["id"],
                         "document_title": doc["title"],
                         "version": doc["proposal_label"],
@@ -583,7 +583,7 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
                         "overdue_days": 0,
                         "responsible": doc["owner_name"],
                         "blocked": blocker_count > 0,
-                        "block_reason": f"{blocker_count} intervention bloquante ouverte" if blocker_count else "",
+                        "block_reason": f"{blocker_count} open blocking intervention" if blocker_count else "",
                         "href": f"#/documents/{doc['id']}?tab=versions&version={proposal['id']}",
                         "priority": 6_000 + blocker_count * 100,
                     }
@@ -594,8 +594,8 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
                 {
                     "key": f"audit-decision:{audit['id']}",
                     "kind": "audit",
-                    "action": "Décider du traitement",
-                    "action_label": "Décider du traitement",
+                    "action": "Decide treatment",
+                    "action_label": "Decide treatment",
                     "document_id": doc["id"],
                     "document_title": doc["title"],
                     "version": doc["publication_label"],
@@ -627,8 +627,8 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
                 {
                     "key": f"task:{row['id']}",
                     "kind": "correction",
-                    "action": "Reprendre la correction" if row["status"] == "IN_PROGRESS" else "Démarrer la tâche",
-                    "action_label": "Reprendre la correction" if row["status"] == "IN_PROGRESS" else "Démarrer",
+                    "action": "Resume remediation" if row["status"] == "IN_PROGRESS" else "Start task",
+                    "action_label": "Resume remediation" if row["status"] == "IN_PROGRESS" else "Start",
                     "document_id": row["document_id"],
                     "document_title": row["document_title"],
                     "version": doc["proposal_label"] if row["version_id"] else doc["publication_label"],
@@ -659,9 +659,9 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
             items.append(
                 {
                     "key": f"issue:{row['id']}",
-                    "kind": "signalement",
-                    "action": "Décider du traitement",
-                    "action_label": "Examiner le signalement",
+                    "kind": "issue",
+                    "action": "Decide treatment",
+                    "action_label": "Review issue",
                     "document_id": row["document_id"],
                     "document_title": row["document_title"],
                     "version": doc["publication_label"],
@@ -684,7 +684,7 @@ def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[di
 def list_work_items(conn: Connection, user: Row, kind: str | None = None) -> dict:
     allowed = {None, "", "overdue_audits", "validations", "tasks", "issues"}
     if kind not in allowed:
-        raise AppError(400, "Filtre de travail invalide.", "validation")
+        raise AppError(400, "Invalid work filter.", "validation")
     items = _work_items(conn, user, kind or None)
     return {"items": items, "total": len(items), "kind": kind or "all"}
 
@@ -730,13 +730,13 @@ def dashboard(conn: Connection, user: Row, scope: str = "mine") -> dict:
     notifications = list_notifications(conn, user, {"limit": 6})
     return {
         "scope": scope,
-        "scope_label": "Mon travail" if scope == "mine" else "Mon équipe",
+        "scope_label": "My work" if scope == "mine" else "My team",
         "counts": counts,
         "metrics": [
-            {"key": "overdue_audits", "label": "Documents à auditer en retard", "value": counts["overdue_audits"], "href": "#/work/overdue_audits"},
-            {"key": "validations", "label": "Validations attendues de moi", "value": counts["validations"], "href": "#/work/validations"},
-            {"key": "tasks", "label": "Mes tâches ouvertes", "value": counts["tasks"], "href": "#/work/tasks"},
-            {"key": "issues", "label": "Signalements à décider", "value": counts["issues"], "href": "#/work/issues"},
+            {"key": "overdue_audits", "label": "Documents overdue for audit", "value": counts["overdue_audits"], "href": "#/work/overdue_audits"},
+            {"key": "validations", "label": "Validations waiting for me", "value": counts["validations"], "href": "#/work/validations"},
+            {"key": "tasks", "label": "My open tasks", "value": counts["tasks"], "href": "#/work/tasks"},
+            {"key": "issues", "label": "Issues to decide", "value": counts["issues"], "href": "#/work/issues"},
         ],
         "accessible_document_count": counts["accessible_documents"],
         "priority_items": work[:12],
@@ -846,11 +846,11 @@ def document_detail(conn: Connection, user: Row, document_id: str) -> dict:
     current_text = detail["publication_label"]
     proposal_text = detail["proposal_label"]
     if detail["current_version_id"] and detail["active_proposal"]:
-        detail["summary"] = f"La version {_version_text(detail['current_version'])} est publiée. {proposal_text}."
+        detail["summary"] = f"Version {_version_text(detail['current_version'])} is published. {proposal_text}."
     elif detail["current_version_id"]:
-        detail["summary"] = f"{current_text}. Aucun travail éditorial actif."
+        detail["summary"] = f"{current_text}. No active editorial work."
     else:
-        detail["summary"] = f"{current_text}. Complétez le brouillon pour préparer la première publication."
+        detail["summary"] = f"{current_text}. Complete the draft to prepare the first publication."
     detail["active_objects"] = {
         "proposal": detail["active_proposal"],
         "audit": detail["active_audit"],
@@ -865,32 +865,32 @@ def _required_publish_gaps(conn: Connection, doc: Row, version: Row) -> list[str
     owner = perm.user_by_id(conn, doc["owner_id"])
     checklist = _loads(doc["audit_checklist_json"], [])
     if not version["title"].strip():
-        gaps.append("titre de version")
+        gaps.append("version title")
     if owner is None or owner["active"] != 1:
-        gaps.append("owner actif")
+        gaps.append("active owner")
     if not doc["team_id"]:
-        gaps.append("équipe responsable")
+        gaps.append("responsible team")
     if doc["confidentiality"] not in ("INTERNE", "EQUIPE", "RESTREINT"):
-        gaps.append("confidentialité")
+        gaps.append("confidentiality")
     if not version["source_location_label"].strip():
-        gaps.append("emplacement de source fictif")
+        gaps.append("fictional source location")
     if not version["placeholder_ref"].strip():
-        gaps.append("référence placeholder")
+        gaps.append("placeholder reference")
     if not version["document_format"].strip():
-        gaps.append("format du document")
+        gaps.append("document format")
     if doc["audit_frequency_value"] <= 0 or doc["audit_frequency_unit"] not in ("days", "months"):
-        gaps.append("fréquence d'audit")
+        gaps.append("audit frequency")
     if not doc["auditor_role"].strip():
-        gaps.append("rôle auditeur")
+        gaps.append("auditor role")
     if not doc["audit_instructions"].strip() and not checklist:
-        gaps.append("consignes ou checklist d'audit")
+        gaps.append("audit instructions or checklist")
     return gaps
 
 
 def _copy_checklist(conn: Connection, audit_id: int, document_id: str, checklist_json: str) -> None:
     checklist = _loads(checklist_json, [])
     if not checklist:
-        checklist = ["Vérifier la pertinence", "Vérifier le propriétaire", "Vérifier la source placeholder"]
+        checklist = ["Check business relevance", "Check the owner", "Check the placeholder source"]
     for label in checklist:
         conn.execute(
             "INSERT INTO audit_checklist_items(audit_id, document_id, label) VALUES (?, ?, ?)",
@@ -901,18 +901,18 @@ def _copy_checklist(conn: Connection, audit_id: int, document_id: str, checklist
 def create_document(conn: Connection, user: Row, data: dict[str, Any]) -> dict:
     team_id = int(data.get("team_id") or 0)
     if not perm.can_create_document(conn, user, team_id):
-        raise AppError(403, "Vous ne pouvez pas créer de document dans cette équipe.", "forbidden")
+        raise AppError(403, "You cannot create a document in this team.", "forbidden")
     title = (data.get("title") or "").strip()
     if not title:
-        raise AppError(400, "Le titre est obligatoire.", "validation")
+        raise AppError(400, "The title is required.", "validation")
     confidentiality = data.get("confidentiality") or "EQUIPE"
     if confidentiality not in ("INTERNE", "EQUIPE", "RESTREINT"):
-        raise AppError(400, "Confidentialité invalide.", "validation")
+        raise AppError(400, "Invalid confidentiality.", "validation")
     owner_id = int(data.get("owner_id") or user["id"])
     owner = _active_user(conn, owner_id)
     if owner_id != user["id"] and not perm.can_administer(conn, user):
-        raise AppError(403, "Seul un administrateur peut créer directement au nom d'un autre owner.", "forbidden")
-    checklist = data.get("audit_checklist") or ["Validité métier", "Owner et équipe", "Source placeholder"]
+        raise AppError(403, "Only an administrator can create directly on behalf of another owner.", "forbidden")
+    checklist = data.get("audit_checklist") or ["Business validity", "Owner and team", "Placeholder source"]
     document_id = data.get("id") or f"DOC-{uuid.uuid4().hex[:10].upper()}"
     now = utcnow()
     with transaction(conn):
@@ -949,7 +949,7 @@ def create_document(conn: Connection, user: Row, data: dict[str, Any]) -> dict:
             INSERT INTO document_access_grants(document_id, user_id, can_view, can_comment, can_contribute, can_review, can_audit, can_manage, granted_by, reason, created_at)
             VALUES (?, ?, 1, 1, 1, 1, 1, 1, ?, ?, ?)
             """,
-            (document_id, owner_id, user["id"], "Owner initial", now),
+            (document_id, owner_id, user["id"], "Initial owner", now),
         )
         cursor = conn.execute(
             """
@@ -968,7 +968,7 @@ def create_document(conn: Connection, user: Row, data: dict[str, Any]) -> dict:
                 data.get("source_location_label") or "",
                 data.get("document_format") or "PDF",
                 data.get("placeholder_ref") or "",
-                data.get("change_summary") or "Création initiale",
+                data.get("change_summary") or "Initial creation",
                 user["id"],
                 now,
             ),
@@ -991,9 +991,9 @@ VERSION_MUTABLE_FIELDS = {
 def update_version(conn: Connection, user: Row, version_id: int, data: dict[str, Any]) -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if version["status"] != "DRAFT":
-        raise AppError(409, "Seul un brouillon peut être modifié.", "conflict")
+        raise AppError(409, "Only drafts can be edited.", "conflict")
     if not perm.can_contribute(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas modifier ce brouillon.", "forbidden")
+        raise AppError(403, "You cannot edit this draft.", "forbidden")
     ignored_sensitive = set(data) - VERSION_MUTABLE_FIELDS - {"row_version"}
     updates = {key: data[key] for key in VERSION_MUTABLE_FIELDS if key in data}
     if not updates and not ignored_sensitive:
@@ -1002,7 +1002,7 @@ def update_version(conn: Connection, user: Row, version_id: int, data: dict[str,
     with transaction(conn):
         current = conn.execute("SELECT row_version FROM document_versions WHERE id = ?", (version_id,)).fetchone()
         if expected is not None and int(expected) != current["row_version"]:
-            raise AppError(409, "Conflit de modification : la version a changé.", "conflict")
+            raise AppError(409, "Edit conflict: the version has changed.", "conflict")
         if updates:
             assignments = ", ".join(f"{key} = ?" for key in updates)
             values = list(updates.values()) + [version_id]
@@ -1028,13 +1028,13 @@ def update_version(conn: Connection, user: Row, version_id: int, data: dict[str,
 def submit_version(conn: Connection, user: Row, version_id: int, reviewer_id: int | None = None) -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if version["status"] != "DRAFT":
-        raise AppError(409, "Cette proposition n'est pas en brouillon.", "invalid_transition")
+        raise AppError(409, "This proposal is not a draft.", "invalid_transition")
     if not perm.can_contribute(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas soumettre cette proposition.", "forbidden")
+        raise AppError(403, "You cannot submit this proposal.", "forbidden")
     reviewer_id = reviewer_id or doc["owner_id"]
     reviewer = _active_user(conn, reviewer_id)
     if not perm.can_view_document(conn, reviewer, doc):
-        raise AppError(422, "Le reviewer choisi n'a pas accès au document. Accordez-lui explicitement l'accès avant de l'attribuer.", "access_required")
+        raise AppError(422, "The selected reviewer cannot access the document. Grant access explicitly before assigning them.", "access_required")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1054,8 +1054,8 @@ def submit_version(conn: Connection, user: Row, version_id: int, reviewer_id: in
             doc["id"],
             f"review:{review_id}",
             "REVIEW_REQUEST",
-            f"Proposition {_version_text({'target_major': version['target_major'], 'target_minor': version['target_minor']}, target=True)} à valider",
-            f"{user['name']} a soumis une proposition dans {APP_NAME}.",
+            f"Proposal {_version_text({'target_major': version['target_major'], 'target_minor': version['target_minor']}, target=True)} ready for validation",
+            f"{user['name']} submitted a proposal in {APP_NAME}.",
             f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
         emit_log(conn, user["id"], "version_submitted", "document_version", version_id, document_id=doc["id"], changes={"reviewer_id": reviewer_id})
@@ -1065,17 +1065,17 @@ def submit_version(conn: Connection, user: Row, version_id: int, reviewer_id: in
 def request_correction(conn: Connection, user: Row, version_id: int, comment: str) -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if not comment.strip():
-        raise AppError(400, "Un commentaire est obligatoire pour demander une correction.", "validation")
+        raise AppError(400, "A comment is required to request a correction.", "validation")
     if version["status"] != "CHALLENGE":
-        raise AppError(409, "La proposition n'est pas en revue.", "invalid_transition")
+        raise AppError(409, "The proposal is not in review.", "invalid_transition")
     if not perm.can_review(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas demander de correction.", "forbidden")
+        raise AppError(403, "You cannot request a correction.", "forbidden")
     review = conn.execute(
         "SELECT * FROM reviews WHERE version_id = ? AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1",
         (version_id,),
     ).fetchone()
     if review is None:
-        raise AppError(409, "Aucune review active.", "invalid_transition")
+        raise AppError(409, "No active review.", "invalid_transition")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1099,7 +1099,7 @@ def request_correction(conn: Connection, user: Row, version_id: int, comment: st
             doc["id"],
             f"correction:{review['id']}:{now}",
             "CORRECTION_REQUEST",
-            "Corrections demandées",
+            "Corrections requested",
             comment,
             f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
@@ -1110,14 +1110,14 @@ def request_correction(conn: Connection, user: Row, version_id: int, comment: st
 def request_intervention(conn: Connection, user: Row, version_id: int, data: dict[str, Any]) -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if version["status"] != "CHALLENGE":
-        raise AppError(409, "La proposition doit rester en revue pour demander une intervention.", "invalid_transition")
+        raise AppError(409, "The proposal must remain in review to request an intervention.", "invalid_transition")
     if not perm.can_review(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas demander d'intervention.", "forbidden")
+        raise AppError(403, "You cannot request an intervention.", "forbidden")
     assignee_id = int(data.get("assignee_id") or 0)
     assignee = _active_user(conn, assignee_id)
     if not perm.can_view_document(conn, assignee, doc):
-        raise AppError(422, "La personne choisie n'a pas accès au document. Un gestionnaire doit lui accorder l'accès explicitement.", "access_required")
-    title = (data.get("title") or "Intervention demandée").strip()
+        raise AppError(422, "The selected person cannot access the document. A manager must grant explicit access.", "access_required")
+    title = (data.get("title") or "Intervention requested").strip()
     blocking = 0 if data.get("blocking") is False else 1
     now = utcnow()
     with transaction(conn):
@@ -1134,7 +1134,7 @@ def request_intervention(conn: Connection, user: Row, version_id: int, data: dic
             doc["id"],
             f"task:{task_id}",
             "TASK_ASSIGNED",
-            "Tâche attribuée",
+            "Task assigned",
             title,
             f"#/tasks?task={task_id}",
         )
@@ -1145,15 +1145,15 @@ def request_intervention(conn: Connection, user: Row, version_id: int, data: dic
 def approve_review(conn: Connection, user: Row, version_id: int, comment: str = "") -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if version["status"] != "CHALLENGE":
-        raise AppError(409, "La proposition n'est pas en revue.", "invalid_transition")
+        raise AppError(409, "The proposal is not in review.", "invalid_transition")
     if not perm.can_review(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas approuver cette review.", "forbidden")
+        raise AppError(403, "You cannot approve this review.", "forbidden")
     review = conn.execute(
         "SELECT * FROM reviews WHERE version_id = ? AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1",
         (version_id,),
     ).fetchone()
     if review is None:
-        raise AppError(409, "Aucune review active.", "invalid_transition")
+        raise AppError(409, "No active review.", "invalid_transition")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1174,8 +1174,8 @@ def approve_review(conn: Connection, user: Row, version_id: int, comment: str = 
             doc["id"],
             f"review-approved:{review['id']}",
             "REVIEW_APPROVED",
-            "Avis de review favorable",
-            f"La proposition {version_id} a reçu un avis favorable.",
+            "Review approved",
+            f"Proposal {version_id} received a favorable review.",
             f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
         emit_log(conn, user["id"], "review_approved", "review", review["id"], document_id=doc["id"], reason=comment)
@@ -1210,30 +1210,30 @@ def _event_type_for_change(change_type: str) -> str:
 def publish_version(conn: Connection, user: Row, version_id: int) -> dict:
     version, doc = _version_for_user(conn, user, version_id)
     if not perm.can_manage_document(conn, user, doc):
-        raise AppError(403, "Seul le data owner ou un gestionnaire explicite peut publier.", "forbidden")
+        raise AppError(403, "Only the data owner or an explicit manager can publish.", "forbidden")
     if version["status"] != "CHALLENGE":
-        raise AppError(409, "Seule une proposition en revue peut être publiée.", "invalid_transition")
+        raise AppError(409, "Only a proposal in review can be published.", "invalid_transition")
     gaps = _required_publish_gaps(conn, doc, version)
     if gaps:
-        raise AppError(422, "Publication impossible : " + ", ".join(gaps) + ".", "missing_metadata")
+        raise AppError(422, "Publication impossible: " + ", ".join(gaps) + ".", "missing_metadata")
     blockers = _open_blocking_tasks(conn, doc["id"], version_id)
     if blockers:
-        raise AppError(409, "Publication bloquée par une intervention bloquante ouverte.", "blocking_task")
+        raise AppError(409, "Publication blocked by an open blocking intervention.", "blocking_task")
     now = utcnow()
     with transaction(conn):
         locked_doc = conn.execute("SELECT * FROM documents WHERE id = ?", (doc["id"],)).fetchone()
         locked_version = conn.execute("SELECT * FROM document_versions WHERE id = ?", (version_id,)).fetchone()
         if locked_version["status"] != "CHALLENGE":
-            raise AppError(409, "La proposition a changé pendant la publication.", "conflict")
+            raise AppError(409, "The proposal changed during publication.", "conflict")
         if locked_version["change_type"] == "INITIAL":
             if locked_doc["current_version_id"] is not None:
-                raise AppError(409, "Une version est déjà publiée.", "conflict")
+                raise AppError(409, "A version is already published.", "conflict")
             major, minor = 1, 0
         else:
             if locked_doc["current_version_id"] is None:
-                raise AppError(409, "Aucune version courante pour cette modification.", "conflict")
+                raise AppError(409, "No current version for this change.", "conflict")
             if locked_version["based_on_version_id"] != locked_doc["current_version_id"]:
-                raise AppError(409, "La version de départ n'est plus la version courante.", "conflict")
+                raise AppError(409, "The starting version is no longer the current version.", "conflict")
             current = conn.execute("SELECT major, minor FROM document_versions WHERE id = ?", (locked_doc["current_version_id"],)).fetchone()
             if locked_version["change_type"] == "EDIT":
                 major, minor = current["major"], current["minor"] + 1
@@ -1275,18 +1275,18 @@ def publish_version(conn: Connection, user: Row, version_id: int) -> dict:
                 SET status = 'RESOLVED', resolution = ?, resolved_at = ?, row_version = row_version + 1
                 WHERE intervention_plan_id = ? AND status NOT IN ('RESOLVED','DISMISSED')
                 """,
-                (f"Corrigé par publication {major}.{minor}", now, plan["id"]),
+                (f"Fixed by publication {major}.{minor}", now, plan["id"]),
             )
             if plan["audit_id"]:
                 conn.execute(
                     "UPDATE audits SET status = 'CLOSED', closed_at = ?, conclusion = CASE WHEN conclusion = '' THEN ? ELSE conclusion END, row_version = row_version + 1 WHERE id = ?",
-                    (now, f"Clôturé par publication {major}.{minor}.", plan["audit_id"]),
+                    (now, f"Closed by publication {major}.{minor}.", plan["audit_id"]),
                 )
         conn.execute(
             "UPDATE flags SET active = 0, cleared_at = ? WHERE document_id = ? AND active = 1 AND flag_type = 'AUDIT_OVERDUE'",
             (now, doc["id"]),
         )
-        notify(conn, locked_doc["owner_id"], doc["id"], f"published:{version_id}", "PUBLISHED", "Publication validée", f"Version {major}.{minor} publiée dans {APP_NAME}.", f"#/documents/{doc['id']}?tab=versions")
+        notify(conn, locked_doc["owner_id"], doc["id"], f"published:{version_id}", "PUBLISHED", "Publication approved", f"Version {major}.{minor} published in {APP_NAME}.", f"#/documents/{doc['id']}?tab=versions")
         emit_log(conn, user["id"], "version_published", "document_version", version_id, document_id=doc["id"], changes={"version": f"{major}.{minor}"})
     return document_detail(conn, user, doc["id"])
 
@@ -1295,7 +1295,7 @@ def review_only_validation(conn: Connection, user: Row, document_id: str, data: 
     data = data or {}
     doc = _document_for_action(conn, user, document_id, "manage")
     if doc["current_version_id"] is None:
-        raise AppError(409, "Une review seule exige une version publiée.", "invalid_transition")
+        raise AppError(409, "A review-only validation requires a published version.", "invalid_transition")
     now = utcnow()
     next_due = add_frequency(now, doc["audit_frequency_value"], doc["audit_frequency_unit"])
     audit_id = data.get("audit_id")
@@ -1309,12 +1309,12 @@ def review_only_validation(conn: Connection, user: Row, document_id: str, data: 
             INSERT INTO validation_events(document_id, version_id, audit_id, actor_id, event_type, previous_due_at, next_due_at, reason, created_at)
             VALUES (?, ?, ?, ?, 'REVIEW_ONLY', ?, ?, ?, ?)
             """,
-            (document_id, doc["current_version_id"], audit_id, user["id"], doc["next_audit_due_at"], next_due, data.get("reason") or "Review validée sans modification", now),
+            (document_id, doc["current_version_id"], audit_id, user["id"], doc["next_audit_due_at"], next_due, data.get("reason") or "Review validated without changes", now),
         )
         if audit_id:
             audit = conn.execute("SELECT * FROM audits WHERE id = ? AND document_id = ?", (audit_id, document_id)).fetchone()
             if audit is None:
-                raise AppError(404, "Audit introuvable.", "audit_not_found")
+                raise AppError(404, "Audit not found.", "audit_not_found")
             unresolved = conn.execute(
                 """
                 SELECT 1 FROM issues
@@ -1324,16 +1324,16 @@ def review_only_validation(conn: Connection, user: Row, document_id: str, data: 
                 (audit_id,),
             ).fetchone()
             if unresolved:
-                raise AppError(409, "Les signalements liés doivent recevoir une résolution explicite.", "unresolved_issues")
+                raise AppError(409, "Linked issues must receive an explicit resolution.", "unresolved_issues")
             conn.execute(
                 "UPDATE audits SET status = 'CLOSED', closed_at = ?, conclusion = CASE WHEN conclusion = '' THEN ? ELSE conclusion END, row_version = row_version + 1 WHERE id = ?",
-                (now, data.get("reason") or "Review seule validée.", audit_id),
+                (now, data.get("reason") or "Review-only validation approved.", audit_id),
             )
         conn.execute(
             "UPDATE flags SET active = 0, cleared_at = ? WHERE document_id = ? AND active = 1 AND flag_type = 'AUDIT_OVERDUE'",
             (now, document_id),
         )
-        notify(conn, doc["owner_id"], document_id, f"review-only:{now}", "VALIDATION", "Review validée", "Le numéro de version reste inchangé.", f"#/documents/{document_id}")
+        notify(conn, doc["owner_id"], document_id, f"review-only:{now}", "VALIDATION", "Review validated", "The version number remains unchanged.", f"#/documents/{document_id}")
         emit_log(conn, user["id"], "review_only_validated", "document", document_id, document_id=document_id, reason=data.get("reason") or "")
     return document_detail(conn, user, document_id)
 
@@ -1341,13 +1341,13 @@ def review_only_validation(conn: Connection, user: Row, document_id: str, data: 
 def create_issue(conn: Connection, user: Row, document_id: str, data: dict[str, Any]) -> dict:
     doc = _document_for_action(conn, user, document_id, "view")
     if doc["current_version_id"] is None:
-        raise AppError(409, "Un signalement utilisateur porte sur un document publié.", "invalid_transition")
+        raise AppError(409, "A user issue must target a published document.", "invalid_transition")
     if not perm.can_comment(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas signaler de problème ici.", "forbidden")
+        raise AppError(403, "You cannot report a problem here.", "forbidden")
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
     if not title or not description:
-        raise AppError(400, "Titre et description sont obligatoires.", "validation")
+        raise AppError(400, "Title and description are required.", "validation")
     now = utcnow()
     with transaction(conn):
         issue_id = conn.execute(
@@ -1367,7 +1367,7 @@ def create_issue(conn: Connection, user: Row, document_id: str, data: dict[str, 
                 now,
             ),
         ).lastrowid
-        notify(conn, doc["owner_id"], document_id, f"issue:{issue_id}", "ISSUE_CREATED", "Signalement à décider", title, f"#/documents/{document_id}?tab=issues&issue={issue_id}")
+        notify(conn, doc["owner_id"], document_id, f"issue:{issue_id}", "ISSUE_CREATED", "Issue to decide", title, f"#/documents/{document_id}?tab=issues&issue={issue_id}")
         emit_log(conn, user["id"], "issue_created", "issue", issue_id, document_id=document_id, changes={"severity": data.get("severity") or "MOYENNE"})
     return document_detail(conn, user, document_id)
 
@@ -1375,14 +1375,14 @@ def create_issue(conn: Connection, user: Row, document_id: str, data: dict[str, 
 def resolve_issue(conn: Connection, user: Row, issue_id: int, data: dict[str, Any]) -> dict:
     issue = conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
     if issue is None:
-        raise AppError(404, "Signalement introuvable.", "issue_not_found")
+        raise AppError(404, "Issue not found.", "issue_not_found")
     doc = _document_for_action(conn, user, issue["document_id"], "manage")
     status = data.get("status") or "RESOLVED"
     if status not in ("RESOLVED", "DISMISSED"):
-        raise AppError(400, "Résolution invalide.", "validation")
+        raise AppError(400, "Invalid resolution.", "validation")
     reason = (data.get("resolution_reason") or "").strip()
     if status == "DISMISSED" and not reason:
-        raise AppError(400, "Un motif est obligatoire pour écarter un signalement.", "validation")
+        raise AppError(400, "A reason is required to dismiss an issue.", "validation")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1400,12 +1400,12 @@ def resolve_issue(conn: Connection, user: Row, issue_id: int, data: dict[str, An
 def add_issue_comment(conn: Connection, user: Row, issue_id: int, body: str) -> dict:
     issue = conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
     if issue is None:
-        raise AppError(404, "Signalement introuvable.", "issue_not_found")
+        raise AppError(404, "Issue not found.", "issue_not_found")
     doc = _document_for_action(conn, user, issue["document_id"], "view")
     if not perm.can_comment(conn, user, doc):
-        raise AppError(403, "Commentaire interdit.", "forbidden")
+        raise AppError(403, "Comments are not allowed.", "forbidden")
     if not body.strip():
-        raise AppError(400, "Le commentaire est obligatoire.", "validation")
+        raise AppError(400, "The comment is required.", "validation")
     with transaction(conn):
         conn.execute(
             "INSERT INTO issue_comments(issue_id, document_id, author_id, body, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1431,7 +1431,7 @@ def _create_audit_locked(conn: Connection, doc: Row, opened_by_id: int | None, d
             INSERT OR IGNORE INTO flags(document_id, flag_type, reason, raised_at)
             VALUES (?, 'AUDIT_OVERDUE', ?, ?)
             """,
-            (doc["id"], "Échéance d'audit atteinte", now),
+            (doc["id"], "Audit due date reached", now),
         )
     notify(
         conn,
@@ -1439,8 +1439,8 @@ def _create_audit_locked(conn: Connection, doc: Row, opened_by_id: int | None, d
         doc["id"],
         f"audit-due:{doc['id']}:{due_at}",
         "AUDIT_DUE",
-        "Audit à réaliser",
-        f"L'audit de {doc['title']} est arrivé à échéance.",
+        "Audit due",
+        f"The audit for {doc['title']} is due.",
         f"#/audits/{audit_id}",
     )
     emit_log(conn, opened_by_id, "audit_opened", "audit", audit_id, document_id=doc["id"], changes={"due_at": due_at, "manual": manual})
@@ -1482,7 +1482,7 @@ def run_scheduler(conn: Connection) -> dict:
                     INSERT OR IGNORE INTO flags(document_id, flag_type, reason, raised_at)
                     VALUES (?, 'AUDIT_OVERDUE', ?, ?)
                     """,
-                    (doc["id"], "Échéance d'audit dépassée", now),
+                    (doc["id"], "Audit due date exceeded", now),
                 )
                 flagged.append(doc["id"])
     return {"created_audits": created, "flagged_documents": flagged}
@@ -1491,22 +1491,22 @@ def run_scheduler(conn: Connection) -> dict:
 def open_manual_audit(conn: Connection, user: Row, document_id: str) -> dict:
     doc = _document_for_action(conn, user, document_id, "manage")
     if doc["current_version_id"] is None or doc["archived_at"] is not None:
-        raise AppError(409, "Audit impossible sur un document jamais publié ou archivé.", "invalid_transition")
+        raise AppError(409, "An audit cannot be opened for a never-published or archived document.", "invalid_transition")
     with transaction(conn):
         try:
             _create_audit_locked(conn, doc, user["id"], utcnow(), manual=True)
         except IntegrityError as exc:
-            raise AppError(409, "Un audit est déjà actif pour ce document.", "active_audit") from exc
+            raise AppError(409, "An audit is already active for this document.", "active_audit") from exc
     return document_detail(conn, user, document_id)
 
 
 def claim_audit(conn: Connection, user: Row, audit_id: int) -> dict:
     audit = conn.execute("SELECT * FROM audits WHERE id = ?", (audit_id,)).fetchone()
     if audit is None:
-        raise AppError(404, "Audit introuvable.", "audit_not_found")
+        raise AppError(404, "Audit not found.", "audit_not_found")
     doc = _document_for_action(conn, user, audit["document_id"], "audit")
     if audit["status"] not in ("TO_DO", "IN_PROGRESS"):
-        raise AppError(409, "Cet audit n'est pas prenable en charge.", "invalid_transition")
+        raise AppError(409, "This audit cannot be claimed.", "invalid_transition")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1524,13 +1524,13 @@ def claim_audit(conn: Connection, user: Row, audit_id: int) -> dict:
 def submit_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any]) -> dict:
     audit = conn.execute("SELECT * FROM audits WHERE id = ?", (audit_id,)).fetchone()
     if audit is None:
-        raise AppError(404, "Audit introuvable.", "audit_not_found")
+        raise AppError(404, "Audit not found.", "audit_not_found")
     doc = _document_for_action(conn, user, audit["document_id"], "audit")
     if audit["status"] not in ("TO_DO", "IN_PROGRESS"):
-        raise AppError(409, "Audit non soumettable.", "invalid_transition")
+        raise AppError(409, "This audit cannot be submitted.", "invalid_transition")
     conclusion = (data.get("conclusion") or "").strip()
     if not conclusion:
-        raise AppError(400, "Le compte rendu d'audit est obligatoire.", "validation")
+        raise AppError(400, "The audit report is required.", "validation")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1556,7 +1556,7 @@ def submit_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                         now,
                     ),
                 )
-        notify(conn, doc["owner_id"], doc["id"], f"audit-submitted:{audit_id}", "AUDIT_RESULT", "Décision attendue", conclusion, f"#/audits/{audit_id}")
+        notify(conn, doc["owner_id"], doc["id"], f"audit-submitted:{audit_id}", "AUDIT_RESULT", "Decision required", conclusion, f"#/audits/{audit_id}")
         emit_log(conn, user["id"], "audit_submitted", "audit", audit_id, document_id=doc["id"], reason=conclusion)
     return document_detail(conn, user, doc["id"])
 
@@ -1564,36 +1564,36 @@ def submit_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
 def decide_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any]) -> dict:
     audit = conn.execute("SELECT * FROM audits WHERE id = ?", (audit_id,)).fetchone()
     if audit is None:
-        raise AppError(404, "Audit introuvable.", "audit_not_found")
+        raise AppError(404, "Audit not found.", "audit_not_found")
     doc = _document_for_action(conn, user, audit["document_id"], "manage")
     if audit["status"] != "AWAITING_OWNER_DECISION":
-        raise AppError(409, "Cet audit n'attend pas une décision owner.", "invalid_transition")
+        raise AppError(409, "This audit is not waiting for an owner decision.", "invalid_transition")
     decision = data.get("decision_type")
     if decision not in ("REVIEW_ONLY", "EDIT", "NEW_VERSION", "ARCHIVE"):
-        raise AppError(400, "Décision invalide.", "validation")
+        raise AppError(400, "Invalid decision.", "validation")
     justification = (data.get("justification") or "").strip()
     if not justification:
-        raise AppError(400, "La justification est obligatoire.", "validation")
+        raise AppError(400, "Justification is required.", "validation")
     if decision == "REVIEW_ONLY":
         open_issues = conn.execute(
             "SELECT * FROM issues WHERE audit_id = ? AND status NOT IN ('RESOLVED','DISMISSED')",
             (audit_id,),
         ).fetchall()
         if open_issues:
-            raise AppError(409, "Résolvez, écartez ou acceptez explicitement les signalements avant une review seule.", "unresolved_issues")
+            raise AppError(409, "Resolve, dismiss, or explicitly accept issues before a review-only validation.", "unresolved_issues")
         return review_only_validation(conn, user, doc["id"], {"audit_id": audit_id, "reason": justification})
     if decision == "ARCHIVE":
         return archive_document(conn, user, doc["id"], {"reason": justification, "audit_id": audit_id})
     if doc["current_version_id"] is None:
-        raise AppError(409, "Une correction exige une version publiée.", "invalid_transition")
+        raise AppError(409, "A remediation requires a published version.", "invalid_transition")
     primary_id = int(data.get("primary_responsible_id") or user["id"])
     primary = _active_user(conn, primary_id)
     if not perm.can_view_document(conn, primary, doc):
-        raise AppError(422, "Le responsable choisi n'a pas accès au document.", "access_required")
+        raise AppError(422, "The selected responsible person cannot access the document.", "access_required")
     reviewer_id = data.get("reviewer_id") or doc["owner_id"]
     reviewer = _active_user(conn, int(reviewer_id))
     if not perm.can_view_document(conn, reviewer, doc):
-        raise AppError(422, "Le reviewer choisi n'a pas accès au document.", "access_required")
+        raise AppError(422, "The selected reviewer cannot access the document.", "access_required")
     current = conn.execute("SELECT * FROM document_versions WHERE id = ?", (doc["current_version_id"],)).fetchone()
     now = utcnow()
     with transaction(conn):
@@ -1653,11 +1653,11 @@ def decide_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                     f"UPDATE issues SET status = 'IN_PROGRESS', intervention_plan_id = ?, row_version = row_version + 1 WHERE document_id = ? AND id IN ({placeholders})",
                     [plan_id, doc["id"], *issue_ids],
                 )
-            for task in data.get("tasks") or [{"title": "Réaliser le plan d'intervention", "instructions": justification, "blocking": True, "assignee_id": primary_id}]:
+            for task in data.get("tasks") or [{"title": "Perform the intervention plan", "instructions": justification, "blocking": True, "assignee_id": primary_id}]:
                 assignee_id = int(task.get("assignee_id") or primary_id)
                 assignee = _active_user(conn, assignee_id)
                 if not perm.can_view_document(conn, assignee, doc):
-                    raise AppError(422, "Un intervenant choisi n'a pas accès au document.", "access_required")
+                    raise AppError(422, "A selected contributor cannot access the document.", "access_required")
                 task_id = conn.execute(
                     """
                     INSERT INTO tasks(document_id, intervention_plan_id, audit_id, version_id, title, instructions, assignee_id, blocking, status, created_by, created_at)
@@ -1668,7 +1668,7 @@ def decide_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                         plan_id,
                         audit_id,
                         version_id,
-                        task.get("title") or "Tâche d'intervention",
+                        task.get("title") or "Intervention task",
                         task.get("instructions") or "",
                         assignee_id,
                         0 if task.get("blocking") is False else 1,
@@ -1676,24 +1676,24 @@ def decide_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                         now,
                     ),
                 ).lastrowid
-                notify(conn, assignee_id, doc["id"], f"task:{task_id}", "TASK_ASSIGNED", "Tâche attribuée", task.get("title") or "Tâche d'intervention", f"#/tasks?task={task_id}")
+                notify(conn, assignee_id, doc["id"], f"task:{task_id}", "TASK_ASSIGNED", "Task assigned", task.get("title") or "Intervention task", f"#/tasks?task={task_id}")
             conn.execute(
                 "UPDATE audits SET status = 'REMEDIATION_IN_PROGRESS', decision = ?, owner_decision_reason = ?, row_version = row_version + 1 WHERE id = ?",
                 (decision, justification, audit_id),
             )
             emit_log(conn, user["id"], "audit_decided", "audit", audit_id, document_id=doc["id"], changes={"decision": decision, "plan_id": plan_id, "version_id": version_id})
         except IntegrityError as exc:
-            raise AppError(409, "Une proposition active existe déjà pour ce document.", "active_proposal") from exc
+            raise AppError(409, "An active proposal already exists for this document.", "active_proposal") from exc
     return document_detail(conn, user, doc["id"])
 
 
 def create_proposal(conn: Connection, user: Row, document_id: str, data: dict[str, Any]) -> dict:
     doc = _document_for_action(conn, user, document_id, "contribute")
     if doc["current_version_id"] is None:
-        raise AppError(409, "Utilisez le brouillon initial tant qu'aucune version n'est publiée.", "invalid_transition")
+        raise AppError(409, "Use the initial draft until a version has been published.", "invalid_transition")
     change_type = data.get("change_type")
     if change_type not in ("EDIT", "NEW_VERSION"):
-        raise AppError(400, "Le type de changement doit être EDIT ou NEW_VERSION.", "validation")
+        raise AppError(400, "The change type must be EDIT or NEW_VERSION.", "validation")
     current = conn.execute("SELECT * FROM document_versions WHERE id = ?", (doc["current_version_id"],)).fetchone()
     now = utcnow()
     try:
@@ -1728,21 +1728,21 @@ def create_proposal(conn: Connection, user: Row, document_id: str, data: dict[st
             ).lastrowid
             emit_log(conn, user["id"], "proposal_created", "document_version", version_id, document_id=doc["id"], changes={"change_type": change_type})
     except IntegrityError as exc:
-        raise AppError(409, "Une seule proposition active est autorisée par document.", "active_proposal") from exc
+        raise AppError(409, "Only one active proposal is allowed per document.", "active_proposal") from exc
     return document_detail(conn, user, document_id)
 
 
 def update_task_status(conn: Connection, user: Row, task_id: int, status: str, reason: str = "") -> dict:
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if task is None:
-        raise AppError(404, "Tâche introuvable.", "task_not_found")
+        raise AppError(404, "Task not found.", "task_not_found")
     doc = _document_for_action(conn, user, task["document_id"], "view")
     if task["assignee_id"] != user["id"] and not perm.can_manage_document(conn, user, doc):
-        raise AppError(403, "Vous ne pouvez pas mettre à jour cette tâche.", "forbidden")
+        raise AppError(403, "You cannot update this task.", "forbidden")
     if status not in ("TODO", "IN_PROGRESS", "DONE", "CANCELLED"):
-        raise AppError(400, "Statut de tâche invalide.", "validation")
+        raise AppError(400, "Invalid task status.", "validation")
     if status == "CANCELLED" and not reason.strip():
-        raise AppError(400, "Un motif est obligatoire pour annuler une tâche.", "validation")
+        raise AppError(400, "A reason is required to cancel a task.", "validation")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1764,10 +1764,10 @@ def grant_access(conn: Connection, user: Row, document_id: str, data: dict[str, 
     grantee_user_id = data.get("user_id")
     grantee_team_id = data.get("team_id")
     if not grantee_user_id and not grantee_team_id:
-        raise AppError(400, "Indiquez un utilisateur ou une équipe.", "validation")
+        raise AppError(400, "Specify a user or a team.", "validation")
     reason = (data.get("reason") or "").strip()
     if not reason:
-        raise AppError(400, "Un motif est obligatoire.", "validation")
+        raise AppError(400, "A reason is required.", "validation")
     with transaction(conn):
         grant_id = conn.execute(
             """
@@ -1798,10 +1798,10 @@ def grant_access(conn: Connection, user: Row, document_id: str, data: dict[str, 
 def revoke_access(conn: Connection, user: Row, grant_id: int, reason: str) -> dict:
     grant = conn.execute("SELECT * FROM document_access_grants WHERE id = ?", (grant_id,)).fetchone()
     if grant is None:
-        raise AppError(404, "Accès introuvable.", "grant_not_found")
+        raise AppError(404, "Access grant not found.", "grant_not_found")
     _document_for_action(conn, user, grant["document_id"], "manage")
     if not reason.strip():
-        raise AppError(400, "Un motif est obligatoire.", "validation")
+        raise AppError(400, "A reason is required.", "validation")
     with transaction(conn):
         conn.execute("UPDATE document_access_grants SET revoked_at = ?, row_version = row_version + 1 WHERE id = ?", (utcnow(), grant_id))
         emit_log(conn, user["id"], "access_revoked", "document_access_grant", grant_id, document_id=grant["document_id"], reason=reason)
@@ -1814,9 +1814,9 @@ def transfer_owner(conn: Connection, user: Row, document_id: str, data: dict[str
     new_owner = _active_user(conn, new_owner_id)
     reason = (data.get("reason") or "").strip()
     if not reason:
-        raise AppError(400, "Un motif est obligatoire pour transférer un document.", "validation")
+        raise AppError(400, "A reason is required to transfer a document.", "validation")
     if not perm.can_view_document(conn, new_owner, doc):
-        raise AppError(422, "Le nouveau owner doit d'abord recevoir un accès explicite.", "access_required")
+        raise AppError(422, "The new owner must first receive explicit access.", "access_required")
     with transaction(conn):
         conn.execute("UPDATE documents SET owner_id = ?, row_version = row_version + 1 WHERE id = ?", (new_owner_id, document_id))
         conn.execute(
@@ -1824,7 +1824,7 @@ def transfer_owner(conn: Connection, user: Row, document_id: str, data: dict[str
             INSERT INTO document_access_grants(document_id, user_id, can_view, can_comment, can_contribute, can_review, can_audit, can_manage, granted_by, reason, created_at)
             VALUES (?, ?, 1, 1, 1, 1, 1, 1, ?, ?, ?)
             """,
-            (document_id, new_owner_id, user["id"], "Transfert owner: " + reason, utcnow()),
+            (document_id, new_owner_id, user["id"], "Owner transfer: " + reason, utcnow()),
         )
         conn.execute(
             "UPDATE tasks SET assignee_id = ? WHERE document_id = ? AND assignee_id = ? AND status IN ('TODO','IN_PROGRESS')",
@@ -1838,7 +1838,7 @@ def archive_document(conn: Connection, user: Row, document_id: str, data: dict[s
     doc = _document_for_action(conn, user, document_id, "manage")
     reason = (data.get("reason") or "").strip()
     if not reason:
-        raise AppError(400, "Un motif d'archivage est obligatoire.", "validation")
+        raise AppError(400, "An archive reason is required.", "validation")
     now = utcnow()
     with transaction(conn):
         conn.execute(
@@ -1847,20 +1847,20 @@ def archive_document(conn: Connection, user: Row, document_id: str, data: dict[s
         )
         conn.execute(
             "UPDATE document_versions SET status = 'CANCELLED', cancelled_reason = ?, row_version = row_version + 1 WHERE document_id = ? AND status IN ('DRAFT','CHALLENGE')",
-            ("Annulé par archivage: " + reason, document_id),
+            ("Cancelled by archive: " + reason, document_id),
         )
         conn.execute(
             "UPDATE tasks SET status = 'CANCELLED', cancel_reason = ?, row_version = row_version + 1 WHERE document_id = ? AND status IN ('TODO','IN_PROGRESS')",
-            ("Annulé par archivage: " + reason, document_id),
+            ("Cancelled by archive: " + reason, document_id),
         )
         conn.execute(
             "UPDATE audits SET status = 'CLOSED', closed_at = ?, conclusion = ? WHERE document_id = ? AND status NOT IN ('CLOSED','CANCELLED')",
-            (now, "Document archivé: " + reason, document_id),
+            (now, "Document archived: " + reason, document_id),
         )
         conn.execute(
             """
             UPDATE issues
-            SET status = 'DISMISSED', resolution = 'Document archivé', resolution_reason = ?, resolved_at = ?, row_version = row_version + 1
+            SET status = 'DISMISSED', resolution = 'Document archived', resolution_reason = ?, resolved_at = ?, row_version = row_version + 1
             WHERE document_id = ? AND status NOT IN ('RESOLVED','DISMISSED')
             """,
             (reason, now, document_id),
@@ -1883,12 +1883,12 @@ def archive_document(conn: Connection, user: Row, document_id: str, data: dict[s
 def snooze_flag(conn: Connection, user: Row, flag_id: int, data: dict[str, Any]) -> dict:
     flag = conn.execute("SELECT * FROM flags WHERE id = ?", (flag_id,)).fetchone()
     if flag is None:
-        raise AppError(404, "Flag introuvable.", "flag_not_found")
+        raise AppError(404, "Flag not found.", "flag_not_found")
     _document_for_action(conn, user, flag["document_id"], "manage")
     reminder_at = (data.get("reminder_at") or "").strip()
     reason = (data.get("reason") or "").strip()
     if not reminder_at or not reason:
-        raise AppError(400, "Date de rappel et motif sont obligatoires.", "validation")
+        raise AppError(400, "Reminder date and reason are required.", "validation")
     with transaction(conn):
         conn.execute(
             "UPDATE flags SET snoozed_until = ?, snooze_reason = ? WHERE id = ?",
@@ -1900,27 +1900,27 @@ def snooze_flag(conn: Connection, user: Row, flag_id: int, data: dict[str, Any])
 
 def _notification_action(conn: Connection, item: dict, doc: Row | None) -> dict:
     if doc is None:
-        return {"label": "Indisponible", "href": "", "state": "inaccessible"}
+        return {"label": "Unavailable", "href": "", "state": "inaccessible"}
     notification_type = item["type"]
     if notification_type == "AUDIT_DUE":
         audit = _active_audit(conn, doc["id"])
         if audit:
-            return {"label": "Ouvrir l'audit", "href": f"#/audits/{audit['id']}", "state": "open"}
+            return {"label": "Open audit", "href": f"#/audits/{audit['id']}", "state": "open"}
     if notification_type == "AUDIT_RESULT":
         audit = _active_audit(conn, doc["id"])
         if audit and audit["status"] == "AWAITING_OWNER_DECISION":
-            return {"label": "Décider du traitement", "href": f"#/audits/{audit['id']}", "state": "open"}
-        return {"label": "Déjà traité", "href": f"#/documents/{doc['id']}?tab=audits", "state": "done"}
+            return {"label": "Decide treatment", "href": f"#/audits/{audit['id']}", "state": "open"}
+        return {"label": "Already handled", "href": f"#/documents/{doc['id']}?tab=audits", "state": "done"}
     if notification_type in ("REVIEW_REQUEST", "REVIEW_APPROVED"):
         proposal = _active_proposal(conn, doc["id"])
         if proposal:
-            return {"label": "Examiner la proposition", "href": f"#/documents/{doc['id']}?tab=versions&version={proposal['id']}", "state": "open"}
-        return {"label": "Déjà traité", "href": f"#/documents/{doc['id']}?tab=versions", "state": "done"}
+            return {"label": "Review proposal", "href": f"#/documents/{doc['id']}?tab=versions&version={proposal['id']}", "state": "open"}
+        return {"label": "Already handled", "href": f"#/documents/{doc['id']}?tab=versions", "state": "done"}
     if notification_type in ("TASK_ASSIGNED", "CORRECTION_REQUEST"):
-        return {"label": "Ouvrir les tâches", "href": f"#/documents/{doc['id']}?tab=overview", "state": "open"}
+        return {"label": "Open tasks", "href": f"#/documents/{doc['id']}?tab=overview", "state": "open"}
     if notification_type == "ISSUE_CREATED":
-        return {"label": "Examiner le signalement", "href": f"#/documents/{doc['id']}?tab=issues", "state": "open"}
-    return {"label": "Ouvrir le contexte", "href": f"#/documents/{doc['id']}", "state": "open"}
+        return {"label": "Review issue", "href": f"#/documents/{doc['id']}?tab=issues", "state": "open"}
+    return {"label": "Open context", "href": f"#/documents/{doc['id']}", "state": "open"}
 
 
 def _decorate_notification(conn: Connection, user: Row, row: Row) -> dict | None:
@@ -1939,7 +1939,7 @@ def _decorate_notification(conn: Connection, user: Row, row: Row) -> dict | None
         item["version_label"] = _version_text(proposal, target=True) if proposal else _version_text(current)
     else:
         item["document_title"] = ""
-        item["action"] = {"label": "Consulter", "href": item["url"] or "#/notifications", "state": "open"}
+        item["action"] = {"label": "View", "href": item["url"] or "#/notifications", "state": "open"}
         item["version_label"] = ""
     return item
 
@@ -2022,12 +2022,12 @@ def audit_detail(conn: Connection, user: Row, audit_id: int) -> dict:
         (audit_id,),
     ).fetchone()
     if audit is None:
-        raise AppError(404, "Audit introuvable.", "not_found")
+        raise AppError(404, "Audit not found.", "not_found")
     try:
         doc = _document_for_action(conn, user, audit["document_id"], "view")
     except AppError as exc:
         if exc.status == 403:
-            raise AppError(404, "Audit introuvable.", "not_found") from exc
+            raise AppError(404, "Audit not found.", "not_found") from exc
         raise
     current = _current_version(conn, doc)
     detail = row_to_dict(audit)
@@ -2048,14 +2048,14 @@ def audit_detail(conn: Connection, user: Row, audit_id: int) -> dict:
         else None
     )
     if audit["status"] in ("TO_DO", "IN_PROGRESS"):
-        detail["next_action"] = "Réaliser l'audit"
+        detail["next_action"] = "Perform audit"
     elif audit["status"] == "AWAITING_OWNER_DECISION":
-        detail["next_action"] = "Décider du traitement"
+        detail["next_action"] = "Decide treatment"
     elif audit["status"] == "REMEDIATION_IN_PROGRESS":
-        detail["next_action"] = "Suivre l'intervention et la proposition"
+        detail["next_action"] = "Follow the intervention and proposal"
     else:
-        detail["next_action"] = "Consulter le résultat"
-    detail["progress"] = ["Revue", "Décision du owner", "Intervention si nécessaire", "Validation", "Clôture"]
+        detail["next_action"] = "Review the result"
+    detail["progress"] = ["Review", "Owner decision", "Intervention if needed", "Validation", "Closure"]
     return detail
 
 
@@ -2111,11 +2111,11 @@ def list_audits(conn: Connection, user: Row, filters: dict[str, Any] | None = No
 
 def admin_create_user(conn: Connection, user: Row, data: dict[str, Any], password_hash: str) -> dict:
     if not perm.can_administer(conn, user):
-        raise AppError(403, "Administration réservée aux administrateurs.", "forbidden")
+        raise AppError(403, "Administration is reserved for administrators.", "forbidden")
     name = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
     if not name or not email:
-        raise AppError(400, "Nom et email sont obligatoires.", "validation")
+        raise AppError(400, "Name and email are required.", "validation")
     with transaction(conn):
         user_id = conn.execute(
             "INSERT INTO users(name, email, password_hash, active, created_at) VALUES (?, ?, ?, 1, ?)",

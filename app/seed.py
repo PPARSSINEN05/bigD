@@ -25,7 +25,7 @@ def insert_role(conn, user_id: int, role: str, team_id: int | None = None) -> No
     conn.execute(
         """
         INSERT OR IGNORE INTO role_assignments(user_id, team_id, role, active, reason, created_at)
-        VALUES (?, ?, ?, 1, 'Données de démonstration', ?)
+        VALUES (?, ?, ?, 1, 'Demo data', ?)
         """,
         (user_id, team_id, role, db.utcnow()),
     )
@@ -48,7 +48,7 @@ def add_doc(
     created_by: int,
     confidentiality: str = "EQUIPE",
     description: str = "",
-    category: str = "Processus",
+    category: str = "Process",
     tags: list[str] | None = None,
     frequency_value: int = 6,
     frequency_unit: str = "months",
@@ -82,20 +82,20 @@ def add_doc(
             frequency_value,
             frequency_unit,
             team_id,
-            "Vérifier la validité métier, le owner, la source fictive et les accès.",
-            services._dumps(["Source placeholder identifiée", "Owner actif", "Checklist métier revue"]),
+            "Check business validity, the owner, the fictional source, and access.",
+            services._dumps(["Placeholder source identified", "Active owner", "Business checklist reviewed"]),
             created_by,
             iso(now - timedelta(days=90)),
             iso(last_validation) if current else None,
             next_due,
             archived_at,
-            "Obsolète dans le jeu de démonstration" if archived else None,
+            "Obsolete in the demo data set" if archived else None,
         ),
     )
     conn.execute(
         """
         INSERT INTO document_access_grants(document_id, user_id, can_view, can_comment, can_contribute, can_review, can_audit, can_manage, granted_by, reason, created_at)
-        VALUES (?, ?, 1, 1, 1, 1, 1, 1, ?, 'Owner de démonstration', ?)
+        VALUES (?, ?, 1, 1, 1, 1, 1, 1, ?, 'Demo owner', ?)
         """,
         (document_id, owner_id, created_by, db.utcnow()),
     )
@@ -110,7 +110,7 @@ def add_doc(
             change_summary, author_id, status, created_at, submitted_at, published_at, validator_id,
             immutable_at
         )
-        VALUES (?, ?, ?, ?, ?, 'INITIAL', ?, ?, 'SharePoint', ?, 'PDF', ?, 'Publication de démonstration', ?, 'UP', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'INITIAL', ?, ?, 'SharePoint', ?, 'PDF', ?, 'Demo publication', ?, 'UP', ?, ?, ?, ?, ?)
         """,
         (
             document_id,
@@ -145,7 +145,7 @@ def add_initial_draft(conn, document_id: str, author_id: int, title: str, *, cha
             source_location_type, source_location_label, document_format, placeholder_ref,
             change_summary, author_id, status, created_at, submitted_at
         )
-        VALUES (?, 1, 0, 'INITIAL', ?, 'Brouillon initial de démonstration', 'SharePoint', ?, 'Word', ?, 'Création initiale', ?, ?, ?, ?)
+        VALUES (?, 1, 0, 'INITIAL', ?, 'Initial demo draft', 'SharePoint', ?, 'Word', ?, 'Initial creation', ?, ?, ?, ?)
         """,
         (document_id, title, f"Espace fictif / {document_id}", f"PLACEHOLDER-{document_id}", author_id, status, now, submitted_at),
     ).lastrowid
@@ -183,7 +183,7 @@ def add_proposal(conn, document_id: str, author_id: int, *, current_version_id: 
             current["source_location_label"],
             current["document_format"],
             current["placeholder_ref"],
-            "Proposition de démonstration",
+            "Demo proposal",
             author_id,
             status,
             now,
@@ -201,18 +201,18 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
     with db.connection(db_path) as conn:
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] > 0:
             if verbose:
-                print("La base contient déjà des utilisateurs, seed ignoré.")
+                print("The database already contains users; seed skipped.")
             return
         with conn:
-            payroll = conn.execute("INSERT INTO teams(name, slug) VALUES ('Gouvernance paie', 'paie')").lastrowid
-            hr = conn.execute("INSERT INTO teams(name, slug) VALUES ('Ressources humaines', 'rh')").lastrowid
+            payroll = conn.execute("INSERT INTO teams(name, slug) VALUES ('Payroll governance', 'paie')").lastrowid
+            hr = conn.execute("INSERT INTO teams(name, slug) VALUES ('Human resources', 'rh')").lastrowid
 
-            admin = insert_user(conn, "Admin Démo", "admin@example.test")
+            admin = insert_user(conn, "Demo Admin", "admin@example.test")
             alice = insert_user(conn, "Alice Owner", "alice@example.test")
             bruno = insert_user(conn, "Bruno Reviewer", "bruno@example.test")
-            clara = insert_user(conn, "Clara Contributrice", "clara@example.test")
-            diane = insert_user(conn, "Diane Owner RH", "diane@example.test")
-            erik = insert_user(conn, "Erik Autre Équipe", "erik@example.test")
+            clara = insert_user(conn, "Clara Contributor", "clara@example.test")
+            diane = insert_user(conn, "Diane HR Owner", "diane@example.test")
+            erik = insert_user(conn, "Erik Other Team", "erik@example.test")
 
             for user_id in (admin, alice, bruno, clara, diane, erik):
                 insert_role(conn, user_id, "USER")
@@ -234,54 +234,54 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             add_doc(
                 conn,
                 document_id="DOC-ONBOARDING-PAIE",
-                title="Guide onboarding paie",
+                title="Payroll onboarding guide",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="INTERNE",
-                description="Document interne publié et à jour.",
-                tags=["paie", "onboarding"],
+                description="Published internal document, currently up to date.",
+                tags=["payroll", "onboarding"],
             )
 
             add_doc(
                 conn,
                 document_id="DOC-PAIE-DRAFT",
-                title="Procédure DSN brouillon",
+                title="Draft DSN procedure",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=clara,
                 current=None,
-                description="Document non publié en brouillon.",
+                description="Unpublished document in draft.",
             )
-            add_initial_draft(conn, "DOC-PAIE-DRAFT", clara, "Procédure DSN brouillon")
+            add_initial_draft(conn, "DOC-PAIE-DRAFT", clara, "Draft DSN procedure")
 
             add_doc(
                 conn,
                 document_id="DOC-AVANTAGES-CHALLENGE",
-                title="Catalogue avantages en revue",
+                title="Benefits catalog in review",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=clara,
                 current=None,
-                description="Première proposition en CHALLENGE.",
+                description="First proposal in review.",
             )
-            add_initial_draft(conn, "DOC-AVANTAGES-CHALLENGE", clara, "Catalogue avantages en revue", challenge=True, reviewer_id=bruno)
+            add_initial_draft(conn, "DOC-AVANTAGES-CHALLENGE", clara, "Benefits catalog in review", challenge=True, reviewer_id=bruno)
 
             restricted_current = add_doc(
                 conn,
                 document_id="DOC-REMUNERATION-RESTREINT",
-                title="Politique rémunérations sensibles",
+                title="Sensitive compensation policy",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="RESTREINT",
-                description="Document restreint avec accès explicites uniquement.",
-                tags=["restreint", "rémunération"],
+                description="Restricted document with explicit access only.",
+                tags=["restricted", "compensation"],
             )
             conn.execute(
                 """
                 INSERT INTO document_access_grants(document_id, user_id, can_view, can_comment, can_review, can_audit, granted_by, reason, created_at)
-                VALUES ('DOC-REMUNERATION-RESTREINT', ?, 1, 1, 1, 1, ?, 'Reviewer explicitement autorisé', ?)
+                VALUES ('DOC-REMUNERATION-RESTREINT', ?, 1, 1, 1, 1, ?, 'Explicitly authorized reviewer', ?)
                 """,
                 (bruno, alice, db.utcnow()),
             )
@@ -290,12 +290,12 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             add_doc(
                 conn,
                 document_id="DOC-CONTROLES-RETARD",
-                title="Contrôles trimestriels paie",
+                title="Quarterly payroll controls",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="EQUIPE",
-                description="Document publié avec audit en retard.",
+                description="Published document with an overdue audit.",
                 frequency_value=30,
                 frequency_unit="days",
                 last_validation=overdue_last,
@@ -304,12 +304,12 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             reporting_current = add_doc(
                 conn,
                 document_id="DOC-REPORTING-BLOQUANT",
-                title="Modèle reporting social",
+                title="Social reporting template",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="EQUIPE",
-                description="Document publié avec une correction bloquante en cours.",
+                description="Published document with a blocking correction in progress.",
             )
             reporting_proposal = add_proposal(
                 conn,
@@ -331,7 +331,7 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             conn.execute(
                 """
                 INSERT INTO tasks(document_id, version_id, title, instructions, assignee_id, blocking, status, created_by, created_at)
-                VALUES ('DOC-REPORTING-BLOQUANT', ?, 'Clarifier les colonnes obligatoires', 'Intervention bloquante de démonstration', ?, 1, 'TODO', ?, ?)
+                VALUES ('DOC-REPORTING-BLOQUANT', ?, 'Clarify required columns', 'Demo blocking intervention', ?, 1, 'TODO', ?, ?)
                 """,
                 (reporting_proposal, bruno, alice, db.utcnow()),
             )
@@ -339,24 +339,24 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             edit_current = add_doc(
                 conn,
                 document_id="DOC-EDIT-11",
-                title="Guide variables paie",
+                title="Payroll variables guide",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="EQUIPE",
-                description="Document avec un edit 1.1 en préparation.",
+                description="Document with edit 1.1 in preparation.",
             )
             add_proposal(conn, "DOC-EDIT-11", clara, current_version_id=edit_current, change_type="EDIT", target_major=1, target_minor=1)
 
             major_current = add_doc(
                 conn,
                 document_id="DOC-MAJEUR-20",
-                title="Politique de contrôle paie",
+                title="Payroll control policy",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="EQUIPE",
-                description="Document avec une version majeure 2.0 en préparation.",
+                description="Document with major version 2.0 in preparation.",
                 current=(1, 2),
             )
             add_proposal(conn, "DOC-MAJEUR-20", clara, current_version_id=major_current, change_type="NEW_VERSION", target_major=2, target_minor=0)
@@ -364,26 +364,26 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
             add_doc(
                 conn,
                 document_id="DOC-ARCHIVE-OLD",
-                title="Ancienne procédure chèques papier",
+                title="Old paper check procedure",
                 team_id=payroll,
                 owner_id=alice,
                 created_by=alice,
                 confidentiality="EQUIPE",
-                description="Document archivé de démonstration.",
+                description="Archived demo document.",
                 archived=True,
             )
 
             conn.execute(
                 """
                 INSERT INTO issues(document_id, version_id, author_id, title, description, severity, suggestions, status, created_at)
-                VALUES ('DOC-EDIT-11', ?, ?, 'Exemple de signalement mineur', 'Une métadonnée éditoriale doit être corrigée.', 'MOYENNE', 'Préparer un edit 1.1', 'OPEN', ?)
+                VALUES ('DOC-EDIT-11', ?, ?, 'Sample minor issue', 'An editorial metadata field must be corrected.', 'MOYENNE', 'Prepare edit 1.1', 'OPEN', ?)
                 """,
                 (edit_current, bruno, db.utcnow()),
             )
             conn.execute(
                 """
                 INSERT INTO issues(document_id, version_id, author_id, title, description, severity, suggestions, status, created_at)
-                VALUES ('DOC-MAJEUR-20', ?, ?, 'Exemple de changement majeur', 'Le processus métier a changé structurellement.', 'HAUTE', 'Préparer une version 2.0', 'OPEN', ?)
+                VALUES ('DOC-MAJEUR-20', ?, ?, 'Sample major change', 'The business process changed structurally.', 'HAUTE', 'Prepare version 2.0', 'OPEN', ?)
                 """,
                 (major_current, bruno, db.utcnow()),
             )
@@ -398,18 +398,18 @@ def seed_demo(path: str | Path | None = None, *, reset: bool = False, verbose: b
                 "DOC-MAJEUR-20",
                 "DOC-ARCHIVE-OLD",
             ):
-                services.emit_log(conn, alice, "demo_seeded", "document", doc_id, document_id=doc_id, reason="Seed de démonstration")
-            services.emit_log(conn, alice, "demo_seeded", "document", "DOC-REMUNERATION-RESTREINT", document_id="DOC-REMUNERATION-RESTREINT", reason=f"Seed restreint version {restricted_current}")
+                services.emit_log(conn, alice, "demo_seeded", "document", doc_id, document_id=doc_id, reason="Demo seed")
+            services.emit_log(conn, alice, "demo_seeded", "document", "DOC-REMUNERATION-RESTREINT", document_id="DOC-REMUNERATION-RESTREINT", reason=f"Restricted seed version {restricted_current}")
 
         services.run_scheduler(conn)
         if verbose:
-            print(f"Base de démonstration créée dans {db_path}")
-            print("Comptes: admin@example.test, alice@example.test, bruno@example.test, clara@example.test, diane@example.test, erik@example.test")
-            print(f"Mot de passe commun: {DEMO_PASSWORD}")
+            print(f"Demo database created at {db_path}")
+            print("Accounts: admin@example.test, alice@example.test, bruno@example.test, clara@example.test, diane@example.test, erik@example.test")
+            print(f"Shared password: {DEMO_PASSWORD}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Crée les données de démonstration")
+    parser = argparse.ArgumentParser(description="Create demo data")
     parser.add_argument("--db", default=str(db.db_path_from_env()))
     parser.add_argument("--reset", action="store_true")
     args = parser.parse_args()

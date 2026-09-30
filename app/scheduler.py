@@ -6,7 +6,7 @@ from . import db, services
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Exécute le planificateur idempotent des audits")
+    parser = argparse.ArgumentParser(description="Run the idempotent audit scheduler")
     parser.add_argument("--db", default=str(db.db_path_from_env()))
     args = parser.parse_args()
     db.migrate(args.db)
