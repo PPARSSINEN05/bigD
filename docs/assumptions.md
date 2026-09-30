@@ -1,4 +1,4 @@
-# Hypothèses et limites
+# bigD — Hypothèses et limites
 
 - Les références de source sont fictives et ne sont jamais récupérées côté serveur.
 - SharePoint est stocké comme emplacement de source, distinct du format `PDF`, `Word`, `Excel`, etc.
@@ -9,4 +9,3 @@
 - Les commentaires sont affichés en texte via le DOM, sans HTML exécutable.
 - Le journal métier est append-only au niveau de l'application.
 - Les notes/scores utilisateurs ne sont pas implémentés.
-

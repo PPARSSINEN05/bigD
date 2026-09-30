@@ -1,4 +1,4 @@
-# Transitions métier
+# bigD — Transitions métier
 
 ## Propositions éditoriales
 
@@ -41,4 +41,3 @@ L'archivage exige un motif et :
 - donne une résolution explicite aux signalements ouverts ;
 - désactive les flags actifs ;
 - conserve versions, audits, signalements et historique.
-

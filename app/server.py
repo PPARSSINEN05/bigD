@@ -14,6 +14,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import auth, db, permissions as perm, services
+from .config import APP_NAME, APP_TITLE, public_config
 
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -39,7 +40,7 @@ class LoginLimiter:
         self.failures.pop(key, None)
 
 
-class DocumentGovServer(ThreadingHTTPServer):
+class BigDServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler], db_path: str | os.PathLike[str]):
         super().__init__(server_address, handler)
         self.db_path = str(db_path)
@@ -47,10 +48,10 @@ class DocumentGovServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server: DocumentGovServer
+    server: BigDServer
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        if os.environ.get("DOCUMENT_GOV_ACCESS_LOG") == "1":
+        if (os.environ.get("BIGD_ACCESS_LOG") or os.environ.get("DOCUMENT_GOV_ACCESS_LOG")) == "1":
             super().log_message(fmt, *args)
 
     def do_OPTIONS(self) -> None:
@@ -116,6 +117,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_api(self, path: str, query: dict[str, list[str]]) -> None:
         try:
+            if path == "/api/config" and self.command == "GET":
+                return self._json(200, public_config())
             if path == "/api/login" and self.command == "POST":
                 return self._login()
             if path == "/api/dev/users" and self.command == "GET":
@@ -139,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
         except services.AppError as exc:
             self._error(exc.status, exc.message, exc.code)
         except Exception as exc:
-            if os.environ.get("DOCUMENT_GOV_DEBUG") == "1":
+            if (os.environ.get("BIGD_DEBUG") or os.environ.get("DOCUMENT_GOV_DEBUG")) == "1":
                 raise
             self._error(500, f"Erreur serveur: {exc}", "server_error")
 
@@ -161,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             safe_user = {"id": user["id"], "name": user["name"], "email": user["email"]}
             self._json(
                 200,
-                {"user": safe_user, "csrf_token": csrf},
+                {"user": safe_user, "csrf_token": csrf, "config": public_config()},
                 {"Set-Cookie": auth.cookie_header_for_session(token)},
             )
 
@@ -177,6 +180,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/session" and self.command == "GET":
             return {
                 "user": {"id": user["id"], "name": user["name"], "email": user["email"]},
+                "config": public_config(),
                 "csrf_token": conn.execute(
                     "SELECT csrf_token FROM sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
                     (user["id"],),
@@ -185,14 +189,28 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/reference" and self.command == "GET":
             return services.list_reference_data(conn, user)
         if path == "/api/dashboard" and self.command == "GET":
-            return services.dashboard(conn, user)
+            scope = (query.get("scope") or ["mine"])[-1]
+            return services.dashboard(conn, user, scope)
+        if path == "/api/work-items" and self.command == "GET":
+            kind = (query.get("kind") or [""])[-1]
+            return services.list_work_items(conn, user, kind)
         if path == "/api/documents" and self.command == "GET":
             filters = {key: values[-1] for key, values in query.items()}
             return services.list_documents(conn, user, filters)
+        if path == "/api/audits" and self.command == "GET":
+            filters = {key: values[-1] for key, values in query.items()}
+            return services.list_audits(conn, user, filters)
+        if path == "/api/tasks" and self.command == "GET":
+            filters = {key: values[-1] for key, values in query.items()}
+            return services.list_tasks(conn, user, filters)
         if path == "/api/documents" and self.command == "POST":
             return services.create_document(conn, user, payload)
         if path == "/api/notifications" and self.command == "GET":
-            return {"items": services.list_notifications(conn, user)}
+            filters = {key: values[-1] for key, values in query.items()}
+            items = services.list_notifications(conn, user, filters)
+            return {"items": items, "total": len(items), "unread": services.unread_notification_count(conn, user)}
+        if path == "/api/notifications/mark-all-read" and self.command == "POST":
+            return services.mark_all_notifications_read(conn, user)
         if path == "/api/scheduler/run" and self.command == "POST":
             if not perm.can_administer(conn, user):
                 raise services.AppError(403, "Planificateur réservé aux administrateurs.", "forbidden")
@@ -202,6 +220,7 @@ class Handler(BaseHTTPRequestHandler):
 
         patterns: list[tuple[str, str, Callable[..., Any]]] = [
             ("GET", r"^/api/documents/([^/]+)$", lambda document_id: services.document_detail(conn, user, document_id)),
+            ("GET", r"^/api/audits/(\d+)$", lambda audit_id: services.audit_detail(conn, user, int(audit_id))),
             ("POST", r"^/api/documents/([^/]+)/proposals$", lambda document_id: services.create_proposal(conn, user, document_id, payload)),
             ("POST", r"^/api/documents/([^/]+)/issues$", lambda document_id: services.create_issue(conn, user, document_id, payload)),
             ("POST", r"^/api/documents/([^/]+)/audits$", lambda document_id: services.open_manual_audit(conn, user, document_id)),
@@ -223,6 +242,7 @@ class Handler(BaseHTTPRequestHandler):
             ("POST", r"^/api/issues/(\d+)/resolve$", lambda issue_id: services.resolve_issue(conn, user, int(issue_id), payload)),
             ("POST", r"^/api/issues/(\d+)/comments$", lambda issue_id: services.add_issue_comment(conn, user, int(issue_id), payload.get("body") or "")),
             ("POST", r"^/api/notifications/(\d+)/read$", lambda notification_id: services.mark_notification_read(conn, user, int(notification_id))),
+            ("POST", r"^/api/notifications/(\d+)/unread$", lambda notification_id: services.mark_notification_unread(conn, user, int(notification_id))),
             ("POST", r"^/api/flags/(\d+)/snooze$", lambda flag_id: services.snooze_flag(conn, user, int(flag_id), payload)),
         ]
         for method, pattern, callback in patterns:
@@ -248,12 +268,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(host: str, port: int, db_path: str | os.PathLike[str]) -> DocumentGovServer:
-    return DocumentGovServer((host, port), Handler, db_path)
+def make_server(host: str, port: int, db_path: str | os.PathLike[str]) -> BigDServer:
+    return BigDServer((host, port), Handler, db_path)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Serveur de gouvernance documentaire")
+    parser = argparse.ArgumentParser(description=f"Serveur {APP_TITLE}")
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--db", default=str(db.db_path_from_env()))
@@ -262,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.migrate:
         db.migrate(args.db)
     server = make_server(args.host, args.port, args.db)
-    print(f"Application lancée sur http://{args.host}:{args.port}", flush=True)
+    print(f"{APP_NAME} lancé sur http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

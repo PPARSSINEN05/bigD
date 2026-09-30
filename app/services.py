@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 import uuid
 from calendar import monthrange
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from sqlite3 import Connection, IntegrityError, Row
 from typing import Any
 
 from . import permissions as perm
+from .config import APP_NAME
 from .db import parse_utc, row_to_dict, rows_to_dicts, transaction, utcnow
 
 
@@ -30,6 +32,107 @@ def _loads(value: str | None, default: Any) -> Any:
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+ACTIVE_AUDIT_STATUSES = {
+    "TO_DO",
+    "IN_PROGRESS",
+    "AWAITING_OWNER_DECISION",
+    "REMEDIATION_IN_PROGRESS",
+    "AWAITING_FINAL_VALIDATION",
+}
+
+
+NOTIFICATION_LABELS = {
+    "REVIEW_REQUEST": "Demande de review",
+    "INTERVENTION_REQUEST": "Demande d'intervention",
+    "TASK_ASSIGNED": "Tâche attribuée",
+    "AUDIT_DUE": "Audit à réaliser",
+    "AUDIT_OVERDUE": "Audit en retard",
+    "ISSUE_CREATED": "Nouveau signalement",
+    "AUDIT_RESULT": "Décision attendue",
+    "CORRECTION_REQUEST": "Corrections demandées",
+    "REVIEW_APPROVED": "Avis de review favorable",
+    "VALIDATION": "Validation enregistrée",
+    "PUBLISHED": "Publication validée",
+}
+
+
+def _normalize(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    return "".join(char for char in text if not unicodedata.combining(char)).casefold()
+
+
+def _safe_int(value: Any, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _safe_choice(value: Any, allowed: set[str], default: str = "") -> str:
+    text = str(value or "")
+    return text if text in allowed else default
+
+
+def _date_or_none(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return parse_utc(value)
+    except ValueError:
+        return None
+
+
+def _overdue_days(value: str | None) -> int:
+    due = _date_or_none(value)
+    if due is None:
+        return 0
+    delta = datetime.now(UTC) - due
+    return max(0, delta.days)
+
+
+def _version_text(row: Row | dict | None, *, target: bool = False) -> str:
+    if not row:
+        return "Non publié"
+    major_key = "target_major" if target else "major"
+    minor_key = "target_minor" if target else "minor"
+    return f"v{row[major_key]}.{row[minor_key]}"
+
+
+def _proposal_kind(row: Row | dict | None) -> str:
+    if not row:
+        return ""
+    if row["change_type"] == "EDIT":
+        return "Mise à jour"
+    if row["change_type"] == "NEW_VERSION":
+        return "Nouvelle version"
+    return "Première publication"
+
+
+def _status_word(status: str) -> str:
+    return {
+        "DRAFT": "Brouillon",
+        "CHALLENGE": "En revue",
+        "UP": "Publié",
+        "CANCELLED": "Annulé",
+        "TO_DO": "À faire",
+        "IN_PROGRESS": "En cours",
+        "AWAITING_OWNER_DECISION": "Décision owner",
+        "REMEDIATION_IN_PROGRESS": "Correction",
+        "AWAITING_FINAL_VALIDATION": "Validation finale",
+        "CLOSED": "Clôturé",
+        "OPEN": "Ouvert",
+        "UNDER_REVIEW": "À décider",
+        "ACCEPTED": "Accepté",
+        "RESOLVED": "Résolu",
+        "DISMISSED": "Écarté",
+    }.get(status, status)
 
 
 def add_frequency(last_validation_at: str, value: int, unit: str) -> str:
@@ -142,10 +245,35 @@ def notify(
 
 
 def list_reference_data(conn: Connection, user: Row) -> dict:
-    teams = rows_to_dicts(conn.execute("SELECT * FROM teams ORDER BY name").fetchall())
-    users = rows_to_dicts(
-        conn.execute("SELECT id, name, email, active, created_at FROM users ORDER BY name").fetchall()
-    )
+    is_admin_user = perm.can_administer(conn, user)
+    if is_admin_user:
+        teams = rows_to_dicts(conn.execute("SELECT * FROM teams ORDER BY name").fetchall())
+        users = rows_to_dicts(conn.execute("SELECT id, name, email, active, created_at FROM users ORDER BY name").fetchall())
+    else:
+        teams = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT t.* FROM teams t
+                JOIN team_memberships tm ON tm.team_id = t.id
+                WHERE tm.user_id = ? AND tm.active = 1
+                ORDER BY t.name
+                """,
+                (user["id"],),
+            ).fetchall()
+        )
+        users = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT DISTINCT u.id, u.name, u.email, u.active, u.created_at
+                FROM users u
+                JOIN team_memberships tm_user ON tm_user.user_id = u.id AND tm_user.active = 1
+                JOIN team_memberships tm_me ON tm_me.team_id = tm_user.team_id AND tm_me.user_id = ? AND tm_me.active = 1
+                WHERE u.active = 1
+                ORDER BY u.name
+                """,
+                (user["id"],),
+            ).fetchall()
+        )
     memberships = rows_to_dicts(conn.execute("SELECT * FROM team_memberships").fetchall())
     roles = rows_to_dicts(conn.execute("SELECT * FROM role_assignments WHERE active = 1").fetchall())
     return {
@@ -153,91 +281,469 @@ def list_reference_data(conn: Connection, user: Row) -> dict:
         "users": users,
         "memberships": memberships,
         "roles": roles,
-        "is_admin": perm.can_administer(conn, user),
+        "is_admin": is_admin_user,
     }
+
+
+def _active_proposal(conn: Connection, document_id: str) -> Row | None:
+    return conn.execute(
+        """
+        SELECT v.*, u.name AS author_name
+        FROM document_versions v
+        JOIN users u ON u.id = v.author_id
+        WHERE v.document_id = ? AND v.status IN ('DRAFT','CHALLENGE')
+        ORDER BY v.created_at DESC
+        LIMIT 1
+        """,
+        (document_id,),
+    ).fetchone()
+
+
+def _active_audit(conn: Connection, document_id: str) -> Row | None:
+    placeholders = ",".join("?" for _ in ACTIVE_AUDIT_STATUSES)
+    return conn.execute(
+        f"""
+        SELECT a.*, u.name AS assignee_name
+        FROM audits a
+        LEFT JOIN users u ON u.id = a.assignee_id
+        WHERE a.document_id = ? AND a.status IN ({placeholders})
+        ORDER BY a.created_at DESC
+        LIMIT 1
+        """,
+        (document_id, *ACTIVE_AUDIT_STATUSES),
+    ).fetchone()
+
+
+def _current_version(conn: Connection, doc: Row | dict) -> Row | None:
+    if not doc["current_version_id"]:
+        return None
+    return conn.execute("SELECT * FROM document_versions WHERE id = ?", (doc["current_version_id"],)).fetchone()
+
+
+def _has_active_overdue_flag(conn: Connection, document_id: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM flags WHERE document_id = ? AND active = 1 AND flag_type = 'AUDIT_OVERDUE' LIMIT 1",
+            (document_id,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _document_search_text(item: dict) -> str:
+    parts = [
+        item.get("id"),
+        item.get("title"),
+        item.get("description"),
+        item.get("category"),
+        item.get("team_name"),
+        item.get("owner_name"),
+        item.get("confidentiality"),
+        item.get("source_location_type"),
+        item.get("document_format"),
+        " ".join(item.get("tags") or []),
+    ]
+    return _normalize(" ".join(str(part or "") for part in parts))
+
+
+def _enrich_document_item(conn: Connection, row: Row) -> dict:
+    item = row_to_dict(row)
+    item["tags"] = _loads(row["tags_json"], [])
+    current = _current_version(conn, row)
+    proposal = _active_proposal(conn, row["id"])
+    audit = _active_audit(conn, row["id"])
+    active_flag = _has_active_overdue_flag(conn, row["id"])
+    now = datetime.now(UTC)
+    due = _date_or_none(row["next_audit_due_at"])
+    overdue = bool(row["current_version_id"] and row["archived_at"] is None and ((due and due < now) or active_flag))
+    upcoming = bool(due and now <= due <= now + timedelta(days=30))
+
+    item["current_version"] = row_to_dict(current)
+    item["current_major"] = current["major"] if current else None
+    item["current_minor"] = current["minor"] if current else None
+    item["active_proposal"] = row_to_dict(proposal)
+    item["active_audit"] = row_to_dict(audit)
+    item["has_active_proposal"] = proposal is not None
+    item["has_active_audit"] = audit is not None
+    item["has_overdue_flag"] = active_flag
+    item["is_audit_overdue"] = overdue
+    item["overdue_days"] = _overdue_days(row["next_audit_due_at"]) if overdue else 0
+
+    if row["archived_at"] is not None:
+        item["publication_state"] = "archived"
+        item["publication_label"] = f"Archivé · Dernière version {_version_text(current)}"
+    elif current:
+        item["publication_state"] = "published"
+        item["publication_label"] = f"Publié · {_version_text(current)}"
+    elif proposal and proposal["status"] == "CHALLENGE":
+        item["publication_state"] = "unpublished"
+        item["publication_label"] = "En revue · Première publication"
+    elif proposal:
+        item["publication_state"] = "draft"
+        item["publication_label"] = "Brouillon initial · Non publié"
+    else:
+        item["publication_state"] = "unpublished"
+        item["publication_label"] = "Non publié"
+
+    if proposal:
+        item["proposal_state"] = proposal["status"].lower()
+        state_word = "En revue" if proposal["status"] == "CHALLENGE" else "Brouillon"
+        if proposal["change_type"] == "NEW_VERSION" and proposal["status"] == "DRAFT":
+            state_word = "En préparation"
+        item["proposal_label"] = f"{_proposal_kind(proposal)} {_version_text(proposal, target=True)} · {state_word}"
+    else:
+        item["proposal_state"] = "none"
+        item["proposal_label"] = "Aucune proposition active"
+
+    if row["archived_at"] is not None:
+        item["audit_state"] = "archived"
+        item["audit_label"] = "Audit arrêté"
+    elif audit and audit["status"] in ("TO_DO", "IN_PROGRESS"):
+        item["audit_state"] = "in_progress"
+        prefix = "Audit en cours" if audit["status"] == "IN_PROGRESS" else "Audit à réaliser"
+        item["audit_label"] = f"{prefix} · retard {item['overdue_days']} j" if overdue else prefix
+    elif audit and audit["status"] == "AWAITING_OWNER_DECISION":
+        item["audit_state"] = "decision"
+        item["audit_label"] = "Validation attendue"
+    elif audit:
+        item["audit_state"] = "in_progress"
+        item["audit_label"] = _status_word(audit["status"])
+    elif overdue:
+        item["audit_state"] = "overdue"
+        item["audit_label"] = f"Audit en retard de {item['overdue_days']} jours"
+    elif upcoming:
+        item["audit_state"] = "upcoming"
+        item["audit_label"] = "Audit à prévoir"
+    elif current:
+        item["audit_state"] = "up_to_date"
+        item["audit_label"] = "Audit à jour"
+    else:
+        item["audit_state"] = "not_planned"
+        item["audit_label"] = "Audit non planifié"
+
+    source = current or proposal
+    item["source_location_type"] = source["source_location_type"] if source else ""
+    item["document_format"] = source["document_format"] if source else ""
+    item["status_summary"] = {
+        "publication": item["publication_label"],
+        "proposal": item["proposal_label"],
+        "audit": item["audit_label"],
+    }
+    return item
 
 
 def list_documents(conn: Connection, user: Row, filters: dict[str, Any] | None = None) -> dict:
     filters = filters or {}
-    search = (filters.get("search") or "").strip().lower()
-    confidentiality = filters.get("confidentiality") or ""
+    search = (filters.get("search") or filters.get("q") or "").strip()
+    normalized_search = _normalize(search)
     include_archived = str(filters.get("include_archived", "")).lower() in ("1", "true", "yes")
-    page = max(1, int(filters.get("page") or 1))
-    per_page = min(50, max(5, int(filters.get("per_page") or 10)))
+    page = _safe_int(filters.get("page"), 1, minimum=1)
+    per_page = _safe_int(filters.get("per_page"), 12, minimum=5, maximum=50)
+    sort = _safe_choice(str(filters.get("sort") or "relevance"), {"relevance", "title", "last_validation", "next_due"}, "relevance")
+
     rows = conn.execute(
         """
-        SELECT d.*, t.name AS team_name, u.name AS owner_name,
-               cv.major AS current_major, cv.minor AS current_minor,
-               EXISTS(SELECT 1 FROM flags f WHERE f.document_id = d.id AND f.active = 1 AND f.flag_type = 'AUDIT_OVERDUE') AS has_overdue_flag,
-               EXISTS(SELECT 1 FROM document_versions v WHERE v.document_id = d.id AND v.status IN ('DRAFT','CHALLENGE')) AS has_active_proposal,
-               EXISTS(SELECT 1 FROM audits a WHERE a.document_id = d.id AND a.status NOT IN ('CLOSED','CANCELLED')) AS has_active_audit
+        SELECT d.*, t.name AS team_name, u.name AS owner_name
         FROM documents d
         JOIN teams t ON t.id = d.team_id
         JOIN users u ON u.id = d.owner_id
-        LEFT JOIN document_versions cv ON cv.id = d.current_version_id
-        ORDER BY COALESCE(d.next_audit_due_at, d.created_at) ASC, d.title ASC
+        ORDER BY d.title ASC
         """
     ).fetchall()
+
     visible = []
-    for doc in rows:
-        if not include_archived and doc["archived_at"] is not None:
+    for row in rows:
+        if not perm.can_view_document(conn, user, row):
             continue
-        if confidentiality and doc["confidentiality"] != confidentiality:
+        item = _enrich_document_item(conn, row)
+        if not include_archived and item["archived_at"] is not None:
             continue
-        if search:
-            haystack = " ".join(
-                [
-                    doc["id"],
-                    doc["title"],
-                    doc["description"],
-                    doc["category"],
-                    doc["tags_json"],
-                    doc["team_name"],
-                    doc["owner_name"],
-                ]
-            ).lower()
-            if search not in haystack:
-                continue
-        if perm.can_view_document(conn, user, doc):
-            item = row_to_dict(doc)
-            item["tags"] = _loads(doc["tags_json"], [])
-            visible.append(item)
+        if filters.get("team_id") and str(item["team_id"]) != str(filters["team_id"]):
+            continue
+        if filters.get("owner_id") and str(item["owner_id"]) != str(filters["owner_id"]):
+            continue
+        if filters.get("category") and _normalize(item["category"]) != _normalize(str(filters["category"])):
+            continue
+        if filters.get("tag") and _normalize(str(filters["tag"])) not in {_normalize(tag) for tag in item["tags"]}:
+            continue
+        if filters.get("confidentiality") and item["confidentiality"] != filters["confidentiality"]:
+            continue
+        if filters.get("publication_state") and item["publication_state"] != filters["publication_state"]:
+            continue
+        if filters.get("proposal_state") and item["proposal_state"] != filters["proposal_state"]:
+            continue
+        if filters.get("audit_state") and item["audit_state"] != filters["audit_state"]:
+            continue
+        if filters.get("source_type") and item["source_location_type"] != filters["source_type"]:
+            continue
+        if filters.get("document_format") and item["document_format"] != filters["document_format"]:
+            continue
+        quick = filters.get("quick") or ""
+        if quick == "mine" and item["owner_id"] != user["id"]:
+            continue
+        if quick == "audit" and item["audit_state"] not in ("overdue", "in_progress", "decision", "upcoming"):
+            continue
+        if quick == "preparation" and item["proposal_state"] == "none":
+            continue
+        if quick == "archives" and item["archived_at"] is None:
+            continue
+        if normalized_search and normalized_search not in _document_search_text(item):
+            continue
+        item["_relevance"] = 0
+        if normalized_search:
+            title = _normalize(item["title"])
+            item["_relevance"] = (40 if title.startswith(normalized_search) else 0) + (20 if normalized_search in title else 0)
+        visible.append(item)
+
+    if sort == "title":
+        visible.sort(key=lambda item: _normalize(item["title"]))
+    elif sort == "last_validation":
+        visible.sort(key=lambda item: item["last_validation_at"] or "", reverse=True)
+    elif sort == "next_due":
+        visible.sort(key=lambda item: item["next_audit_due_at"] or "9999")
+    else:
+        visible.sort(key=lambda item: (-item["_relevance"], _normalize(item["title"])))
+
     total = len(visible)
     start = (page - 1) * per_page
-    return {"items": visible[start : start + per_page], "page": page, "per_page": per_page, "total": total}
+    items = [{k: v for k, v in item.items() if k != "_relevance"} for item in visible[start : start + per_page]]
+    return {
+        "items": items,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "filters": {key: value for key, value in filters.items() if value not in ("", None)},
+        "sort": sort,
+    }
 
 
-def dashboard(conn: Connection, user: Row) -> dict:
-    docs = list_documents(conn, user, {"per_page": 1000})["items"]
-    doc_ids = {doc["id"] for doc in docs}
-    tasks = []
-    for row in conn.execute(
-        """
-        SELECT ta.*, d.title AS document_title
-        FROM tasks ta JOIN documents d ON d.id = ta.document_id
-        WHERE ta.assignee_id = ? AND ta.status IN ('TODO','IN_PROGRESS')
-        ORDER BY ta.created_at DESC
+def _visible_documents(conn: Connection, user: Row, include_archived: bool = False) -> list[dict]:
+    return list_documents(conn, user, {"per_page": 1000, "include_archived": "1" if include_archived else ""})["items"]
+
+
+def _blocking_task_count(conn: Connection, document_id: str, version_id: int | None = None) -> int:
+    params: list[Any] = [document_id]
+    condition = ""
+    if version_id:
+        condition = "AND (version_id = ? OR version_id IS NULL)"
+        params.append(version_id)
+    return conn.execute(
+        f"""
+        SELECT COUNT(*) AS c FROM tasks
+        WHERE document_id = ? {condition}
+          AND blocking = 1
+          AND status NOT IN ('DONE','CANCELLED')
         """,
-        (user["id"],),
-    ).fetchall():
-        if row["document_id"] in doc_ids:
-            tasks.append(row_to_dict(row))
-    notifications = rows_to_dicts(
-        conn.execute(
+        params,
+    ).fetchone()["c"]
+
+
+def _work_items(conn: Connection, user: Row, kind: str | None = None) -> list[dict]:
+    docs = _visible_documents(conn, user, include_archived=False)
+    doc_by_id = {doc["id"]: doc for doc in docs}
+    items: list[dict] = []
+
+    for doc in docs:
+        if kind in (None, "overdue_audits") and doc["is_audit_overdue"]:
+            audit = doc["active_audit"]
+            items.append(
+                {
+                    "key": f"audit-overdue:{doc['id']}",
+                    "kind": "audit",
+                    "action": "Réaliser l'audit",
+                    "action_label": "Réaliser l'audit",
+                    "document_id": doc["id"],
+                    "document_title": doc["title"],
+                    "version": doc["publication_label"],
+                    "due_at": doc["next_audit_due_at"],
+                    "overdue_days": doc["overdue_days"],
+                    "responsible": doc["owner_name"],
+                    "blocked": False,
+                    "href": f"#/audits/{audit['id']}" if audit else f"#/documents/{doc['id']}?tab=audits",
+                    "priority": 10_000 + doc["overdue_days"],
+                }
+            )
+        proposal = doc["active_proposal"]
+        if proposal and proposal["status"] == "CHALLENGE" and kind in (None, "validations"):
+            blocker_count = _blocking_task_count(conn, doc["id"], proposal["id"])
+            if doc["owner_id"] == user["id"] or conn.execute(
+                "SELECT 1 FROM reviews WHERE version_id = ? AND reviewer_id = ? AND status = 'PENDING'",
+                (proposal["id"], user["id"]),
+            ).fetchone():
+                items.append(
+                    {
+                        "key": f"proposal:{proposal['id']}",
+                        "kind": "validation",
+                        "action": "Examiner la proposition",
+                        "action_label": "Examiner la proposition",
+                        "document_id": doc["id"],
+                        "document_title": doc["title"],
+                        "version": doc["proposal_label"],
+                        "due_at": proposal["submitted_at"] or proposal["created_at"],
+                        "overdue_days": 0,
+                        "responsible": doc["owner_name"],
+                        "blocked": blocker_count > 0,
+                        "block_reason": f"{blocker_count} intervention bloquante ouverte" if blocker_count else "",
+                        "href": f"#/documents/{doc['id']}?tab=versions&version={proposal['id']}",
+                        "priority": 6_000 + blocker_count * 100,
+                    }
+                )
+        audit = doc["active_audit"]
+        if audit and audit["status"] == "AWAITING_OWNER_DECISION" and doc["owner_id"] == user["id"] and kind in (None, "validations"):
+            items.append(
+                {
+                    "key": f"audit-decision:{audit['id']}",
+                    "kind": "audit",
+                    "action": "Décider du traitement",
+                    "action_label": "Décider du traitement",
+                    "document_id": doc["id"],
+                    "document_title": doc["title"],
+                    "version": doc["publication_label"],
+                    "due_at": audit["submitted_at"] or audit["due_at"],
+                    "overdue_days": _overdue_days(audit["due_at"]),
+                    "responsible": doc["owner_name"],
+                    "blocked": False,
+                    "href": f"#/audits/{audit['id']}",
+                    "priority": 8_000 + _overdue_days(audit["due_at"]),
+                }
+            )
+
+    if kind in (None, "tasks"):
+        for row in conn.execute(
             """
-            SELECT * FROM notifications
-            WHERE recipient_id = ?
-            ORDER BY read_at IS NOT NULL, created_at DESC
-            LIMIT 20
+            SELECT ta.*, d.title AS document_title, u.name AS assignee_name
+            FROM tasks ta
+            JOIN documents d ON d.id = ta.document_id
+            LEFT JOIN users u ON u.id = ta.assignee_id
+            WHERE ta.assignee_id = ? AND ta.status IN ('TODO','IN_PROGRESS')
+            ORDER BY ta.created_at DESC
             """,
             (user["id"],),
+        ).fetchall():
+            if row["document_id"] not in doc_by_id:
+                continue
+            doc = doc_by_id[row["document_id"]]
+            items.append(
+                {
+                    "key": f"task:{row['id']}",
+                    "kind": "correction",
+                    "action": "Reprendre la correction" if row["status"] == "IN_PROGRESS" else "Démarrer la tâche",
+                    "action_label": "Reprendre la correction" if row["status"] == "IN_PROGRESS" else "Démarrer",
+                    "document_id": row["document_id"],
+                    "document_title": row["document_title"],
+                    "version": doc["proposal_label"] if row["version_id"] else doc["publication_label"],
+                    "due_at": row["created_at"],
+                    "overdue_days": 0,
+                    "responsible": row["assignee_name"] or user["name"],
+                    "blocked": bool(row["blocking"]),
+                    "href": f"#/tasks?task={row['id']}",
+                    "priority": 7_000 + (500 if row["blocking"] else 0),
+                    "task_id": row["id"],
+                }
+            )
+
+    if kind in (None, "issues"):
+        for row in conn.execute(
+            """
+            SELECT i.*, d.title AS document_title, u.name AS author_name
+            FROM issues i
+            JOIN documents d ON d.id = i.document_id
+            LEFT JOIN users u ON u.id = i.author_id
+            WHERE i.status IN ('OPEN','UNDER_REVIEW','ACCEPTED')
+            ORDER BY i.created_at DESC
+            """
+        ).fetchall():
+            doc = doc_by_id.get(row["document_id"])
+            if not doc or not perm.can_manage_document(conn, user, perm.document_by_id(conn, row["document_id"])):
+                continue
+            items.append(
+                {
+                    "key": f"issue:{row['id']}",
+                    "kind": "signalement",
+                    "action": "Décider du traitement",
+                    "action_label": "Examiner le signalement",
+                    "document_id": row["document_id"],
+                    "document_title": row["document_title"],
+                    "version": doc["publication_label"],
+                    "due_at": row["created_at"],
+                    "overdue_days": 0,
+                    "responsible": doc["owner_name"],
+                    "blocked": False,
+                    "href": f"#/documents/{row['document_id']}?tab=issues&issue={row['id']}",
+                    "priority": 5_500,
+                    "issue_id": row["id"],
+                }
+            )
+
+    unique = {}
+    for item in items:
+        unique.setdefault(item["key"], item)
+    return sorted(unique.values(), key=lambda item: (-item["priority"], item["due_at"] or ""))
+
+
+def list_work_items(conn: Connection, user: Row, kind: str | None = None) -> dict:
+    allowed = {None, "", "overdue_audits", "validations", "tasks", "issues"}
+    if kind not in allowed:
+        raise AppError(400, "Filtre de travail invalide.", "validation")
+    items = _work_items(conn, user, kind or None)
+    return {"items": items, "total": len(items), "kind": kind or "all"}
+
+
+def dashboard(conn: Connection, user: Row, scope: str = "mine") -> dict:
+    if scope not in ("mine", "team"):
+        scope = "mine"
+    docs = _visible_documents(conn, user, include_archived=False)
+    work = _work_items(conn, user)
+    counts = {
+        "overdue_audits": len(_work_items(conn, user, "overdue_audits")),
+        "validations": len(_work_items(conn, user, "validations")),
+        "tasks": len(_work_items(conn, user, "tasks")),
+        "issues": len(_work_items(conn, user, "issues")),
+        "accessible_documents": len(docs),
+    }
+    now = datetime.now(UTC)
+    upcoming = [
+        doc
+        for doc in docs
+        if doc["next_audit_due_at"]
+        and doc["archived_at"] is None
+        and doc["audit_state"] in ("upcoming", "up_to_date")
+        and (due := _date_or_none(doc["next_audit_due_at"])) is not None
+        and now <= due <= now + timedelta(days=30)
+    ]
+    upcoming.sort(key=lambda doc: doc["next_audit_due_at"])
+    recent_activity = rows_to_dicts(
+        conn.execute(
+            """
+            SELECT l.*, d.title AS document_title, u.name AS actor_name
+            FROM activity_logs l
+            JOIN documents d ON d.id = l.document_id
+            LEFT JOIN users u ON u.id = l.actor_id
+            WHERE l.technical = 0
+            ORDER BY l.created_at DESC
+            LIMIT 80
+            """
         ).fetchall()
     )
+    visible_ids = {doc["id"] for doc in docs}
+    recent_activity = [item for item in recent_activity if item["document_id"] in visible_ids][:8]
+    notifications = list_notifications(conn, user, {"limit": 6})
     return {
-        "document_count": len(docs),
-        "overdue_count": sum(1 for doc in docs if doc["has_overdue_flag"]),
-        "active_tasks": tasks,
+        "scope": scope,
+        "scope_label": "Mon travail" if scope == "mine" else "Mon équipe",
+        "counts": counts,
+        "metrics": [
+            {"key": "overdue_audits", "label": "Documents à auditer en retard", "value": counts["overdue_audits"], "href": "#/work/overdue_audits"},
+            {"key": "validations", "label": "Validations attendues de moi", "value": counts["validations"], "href": "#/work/validations"},
+            {"key": "tasks", "label": "Mes tâches ouvertes", "value": counts["tasks"], "href": "#/work/tasks"},
+            {"key": "issues", "label": "Signalements à décider", "value": counts["issues"], "href": "#/work/issues"},
+        ],
+        "accessible_document_count": counts["accessible_documents"],
+        "priority_items": work[:12],
+        "upcoming_deadlines": upcoming[:8],
+        "recent_activity": recent_activity,
         "notifications": notifications,
+        "unread_notifications": unread_notification_count(conn, user),
     }
 
 
@@ -257,17 +763,64 @@ def document_detail(conn: Connection, user: Row, document_id: str) -> dict:
     ).fetchall():
         if row["status"] == "UP" or perm.has_workflow_access(conn, user["id"], doc):
             versions.append(row_to_dict(row))
-    detail = row_to_dict(doc)
+    detail = _enrich_document_item(conn, doc)
     detail["tags"] = _loads(doc["tags_json"], [])
     detail["audit_checklist"] = _loads(doc["audit_checklist_json"], [])
     detail["team"] = row_to_dict(conn.execute("SELECT * FROM teams WHERE id = ?", (doc["team_id"],)).fetchone())
     detail["owner"] = row_to_dict(perm.user_by_id(conn, doc["owner_id"]))
     detail["auditor_team"] = row_to_dict(conn.execute("SELECT * FROM teams WHERE id = ?", (doc["auditor_team_id"],)).fetchone())
     detail["versions"] = versions
-    detail["reviews"] = rows_to_dicts(conn.execute("SELECT * FROM reviews WHERE document_id = ? ORDER BY created_at DESC", (document_id,)).fetchall())
-    detail["audits"] = rows_to_dicts(conn.execute("SELECT * FROM audits WHERE document_id = ? ORDER BY created_at DESC", (document_id,)).fetchall())
-    detail["issues"] = rows_to_dicts(conn.execute("SELECT * FROM issues WHERE document_id = ? ORDER BY created_at DESC", (document_id,)).fetchall())
-    detail["tasks"] = rows_to_dicts(conn.execute("SELECT * FROM tasks WHERE document_id = ? ORDER BY created_at DESC", (document_id,)).fetchall())
+    detail["reviews"] = rows_to_dicts(
+        conn.execute(
+            """
+            SELECT r.*, rv.target_major, rv.target_minor, rv.major, rv.minor, rv.change_type,
+                   requester.name AS requester_name, reviewer.name AS reviewer_name
+            FROM reviews r
+            JOIN document_versions rv ON rv.id = r.version_id
+            JOIN users requester ON requester.id = r.requester_id
+            JOIN users reviewer ON reviewer.id = r.reviewer_id
+            WHERE r.document_id = ?
+            ORDER BY r.created_at DESC
+            """,
+            (document_id,),
+        ).fetchall()
+    )
+    detail["audits"] = rows_to_dicts(
+        conn.execute(
+            """
+            SELECT a.*, u.name AS assignee_name
+            FROM audits a
+            LEFT JOIN users u ON u.id = a.assignee_id
+            WHERE a.document_id = ?
+            ORDER BY a.created_at DESC
+            """,
+            (document_id,),
+        ).fetchall()
+    )
+    detail["issues"] = rows_to_dicts(
+        conn.execute(
+            """
+            SELECT i.*, u.name AS author_name
+            FROM issues i
+            LEFT JOIN users u ON u.id = i.author_id
+            WHERE i.document_id = ?
+            ORDER BY i.created_at DESC
+            """,
+            (document_id,),
+        ).fetchall()
+    )
+    detail["tasks"] = rows_to_dicts(
+        conn.execute(
+            """
+            SELECT t.*, u.name AS assignee_name
+            FROM tasks t
+            LEFT JOIN users u ON u.id = t.assignee_id
+            WHERE t.document_id = ?
+            ORDER BY t.created_at DESC
+            """,
+            (document_id,),
+        ).fetchall()
+    )
     detail["flags"] = rows_to_dicts(conn.execute("SELECT * FROM flags WHERE document_id = ? ORDER BY raised_at DESC", (document_id,)).fetchall())
     detail["activity"] = rows_to_dicts(
         conn.execute(
@@ -289,6 +842,20 @@ def document_detail(conn: Connection, user: Row, document_id: str) -> dict:
         "can_review": perm.can_review(conn, user, doc),
         "can_audit": perm.can_audit(conn, user, doc),
         "can_manage": perm.can_manage_document(conn, user, doc),
+    }
+    current_text = detail["publication_label"]
+    proposal_text = detail["proposal_label"]
+    if detail["current_version_id"] and detail["active_proposal"]:
+        detail["summary"] = f"La version {_version_text(detail['current_version'])} est publiée. {proposal_text}."
+    elif detail["current_version_id"]:
+        detail["summary"] = f"{current_text}. Aucun travail éditorial actif."
+    else:
+        detail["summary"] = f"{current_text}. Complétez le brouillon pour préparer la première publication."
+    detail["active_objects"] = {
+        "proposal": detail["active_proposal"],
+        "audit": detail["active_audit"],
+        "blocking_tasks": [task for task in detail["tasks"] if task["blocking"] and task["status"] not in ("DONE", "CANCELLED")],
+        "open_issues": [issue for issue in detail["issues"] if issue["status"] not in ("RESOLVED", "DISMISSED")],
     }
     return detail
 
@@ -487,9 +1054,9 @@ def submit_version(conn: Connection, user: Row, version_id: int, reviewer_id: in
             doc["id"],
             f"review:{review_id}",
             "REVIEW_REQUEST",
-            "Demande de review",
-            f"{user['name']} a soumis une proposition pour {doc['title']}.",
-            f"/#document={doc['id']}",
+            f"Proposition {_version_text({'target_major': version['target_major'], 'target_minor': version['target_minor']}, target=True)} à valider",
+            f"{user['name']} a soumis une proposition dans {APP_NAME}.",
+            f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
         emit_log(conn, user["id"], "version_submitted", "document_version", version_id, document_id=doc["id"], changes={"reviewer_id": reviewer_id})
     return document_detail(conn, user, doc["id"])
@@ -534,7 +1101,7 @@ def request_correction(conn: Connection, user: Row, version_id: int, comment: st
             "CORRECTION_REQUEST",
             "Corrections demandées",
             comment,
-            f"/#document={doc['id']}",
+            f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
         emit_log(conn, user["id"], "correction_requested", "document_version", version_id, document_id=doc["id"], reason=comment)
     return document_detail(conn, user, doc["id"])
@@ -569,7 +1136,7 @@ def request_intervention(conn: Connection, user: Row, version_id: int, data: dic
             "TASK_ASSIGNED",
             "Tâche attribuée",
             title,
-            f"/#document={doc['id']}",
+            f"#/tasks?task={task_id}",
         )
         emit_log(conn, user["id"], "intervention_requested", "task", task_id, document_id=doc["id"], changes={"blocking": bool(blocking)})
     return document_detail(conn, user, doc["id"])
@@ -609,7 +1176,7 @@ def approve_review(conn: Connection, user: Row, version_id: int, comment: str = 
             "REVIEW_APPROVED",
             "Avis de review favorable",
             f"La proposition {version_id} a reçu un avis favorable.",
-            f"/#document={doc['id']}",
+            f"#/documents/{doc['id']}?tab=versions&version={version_id}",
         )
         emit_log(conn, user["id"], "review_approved", "review", review["id"], document_id=doc["id"], reason=comment)
     return document_detail(conn, user, doc["id"])
@@ -719,7 +1286,7 @@ def publish_version(conn: Connection, user: Row, version_id: int) -> dict:
             "UPDATE flags SET active = 0, cleared_at = ? WHERE document_id = ? AND active = 1 AND flag_type = 'AUDIT_OVERDUE'",
             (now, doc["id"]),
         )
-        notify(conn, locked_doc["owner_id"], doc["id"], f"published:{version_id}", "PUBLISHED", "Publication validée", f"Version {major}.{minor} publiée.", f"/#document={doc['id']}")
+        notify(conn, locked_doc["owner_id"], doc["id"], f"published:{version_id}", "PUBLISHED", "Publication validée", f"Version {major}.{minor} publiée dans {APP_NAME}.", f"#/documents/{doc['id']}?tab=versions")
         emit_log(conn, user["id"], "version_published", "document_version", version_id, document_id=doc["id"], changes={"version": f"{major}.{minor}"})
     return document_detail(conn, user, doc["id"])
 
@@ -766,7 +1333,7 @@ def review_only_validation(conn: Connection, user: Row, document_id: str, data: 
             "UPDATE flags SET active = 0, cleared_at = ? WHERE document_id = ? AND active = 1 AND flag_type = 'AUDIT_OVERDUE'",
             (now, document_id),
         )
-        notify(conn, doc["owner_id"], document_id, f"review-only:{now}", "VALIDATION", "Review validée", "Le numéro de version reste inchangé.", f"/#document={document_id}")
+        notify(conn, doc["owner_id"], document_id, f"review-only:{now}", "VALIDATION", "Review validée", "Le numéro de version reste inchangé.", f"#/documents/{document_id}")
         emit_log(conn, user["id"], "review_only_validated", "document", document_id, document_id=document_id, reason=data.get("reason") or "")
     return document_detail(conn, user, document_id)
 
@@ -800,7 +1367,7 @@ def create_issue(conn: Connection, user: Row, document_id: str, data: dict[str, 
                 now,
             ),
         ).lastrowid
-        notify(conn, doc["owner_id"], document_id, f"issue:{issue_id}", "ISSUE_CREATED", "Nouveau signalement", title, f"/#document={document_id}")
+        notify(conn, doc["owner_id"], document_id, f"issue:{issue_id}", "ISSUE_CREATED", "Signalement à décider", title, f"#/documents/{document_id}?tab=issues&issue={issue_id}")
         emit_log(conn, user["id"], "issue_created", "issue", issue_id, document_id=document_id, changes={"severity": data.get("severity") or "MOYENNE"})
     return document_detail(conn, user, document_id)
 
@@ -872,9 +1439,9 @@ def _create_audit_locked(conn: Connection, doc: Row, opened_by_id: int | None, d
         doc["id"],
         f"audit-due:{doc['id']}:{due_at}",
         "AUDIT_DUE",
-        "Audit à traiter",
+        "Audit à réaliser",
         f"L'audit de {doc['title']} est arrivé à échéance.",
-        f"/#document={doc['id']}",
+        f"#/audits/{audit_id}",
     )
     emit_log(conn, opened_by_id, "audit_opened", "audit", audit_id, document_id=doc["id"], changes={"due_at": due_at, "manual": manual})
     return audit_id
@@ -989,7 +1556,7 @@ def submit_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                         now,
                     ),
                 )
-        notify(conn, doc["owner_id"], doc["id"], f"audit-submitted:{audit_id}", "AUDIT_RESULT", "Résultat d'audit à décider", conclusion, f"/#document={doc['id']}")
+        notify(conn, doc["owner_id"], doc["id"], f"audit-submitted:{audit_id}", "AUDIT_RESULT", "Décision attendue", conclusion, f"#/audits/{audit_id}")
         emit_log(conn, user["id"], "audit_submitted", "audit", audit_id, document_id=doc["id"], reason=conclusion)
     return document_detail(conn, user, doc["id"])
 
@@ -1109,7 +1676,7 @@ def decide_audit(conn: Connection, user: Row, audit_id: int, data: dict[str, Any
                         now,
                     ),
                 ).lastrowid
-                notify(conn, assignee_id, doc["id"], f"task:{task_id}", "TASK_ASSIGNED", "Tâche attribuée", task.get("title") or "Tâche d'intervention", f"/#document={doc['id']}")
+                notify(conn, assignee_id, doc["id"], f"task:{task_id}", "TASK_ASSIGNED", "Tâche attribuée", task.get("title") or "Tâche d'intervention", f"#/tasks?task={task_id}")
             conn.execute(
                 "UPDATE audits SET status = 'REMEDIATION_IN_PROGRESS', decision = ?, owner_decision_reason = ?, row_version = row_version + 1 WHERE id = ?",
                 (decision, justification, audit_id),
@@ -1331,12 +1898,83 @@ def snooze_flag(conn: Connection, user: Row, flag_id: int, data: dict[str, Any])
     return document_detail(conn, user, flag["document_id"])
 
 
-def list_notifications(conn: Connection, user: Row) -> list[dict]:
+def _notification_action(conn: Connection, item: dict, doc: Row | None) -> dict:
+    if doc is None:
+        return {"label": "Indisponible", "href": "", "state": "inaccessible"}
+    notification_type = item["type"]
+    if notification_type == "AUDIT_DUE":
+        audit = _active_audit(conn, doc["id"])
+        if audit:
+            return {"label": "Ouvrir l'audit", "href": f"#/audits/{audit['id']}", "state": "open"}
+    if notification_type == "AUDIT_RESULT":
+        audit = _active_audit(conn, doc["id"])
+        if audit and audit["status"] == "AWAITING_OWNER_DECISION":
+            return {"label": "Décider du traitement", "href": f"#/audits/{audit['id']}", "state": "open"}
+        return {"label": "Déjà traité", "href": f"#/documents/{doc['id']}?tab=audits", "state": "done"}
+    if notification_type in ("REVIEW_REQUEST", "REVIEW_APPROVED"):
+        proposal = _active_proposal(conn, doc["id"])
+        if proposal:
+            return {"label": "Examiner la proposition", "href": f"#/documents/{doc['id']}?tab=versions&version={proposal['id']}", "state": "open"}
+        return {"label": "Déjà traité", "href": f"#/documents/{doc['id']}?tab=versions", "state": "done"}
+    if notification_type in ("TASK_ASSIGNED", "CORRECTION_REQUEST"):
+        return {"label": "Ouvrir les tâches", "href": f"#/documents/{doc['id']}?tab=overview", "state": "open"}
+    if notification_type == "ISSUE_CREATED":
+        return {"label": "Examiner le signalement", "href": f"#/documents/{doc['id']}?tab=issues", "state": "open"}
+    return {"label": "Ouvrir le contexte", "href": f"#/documents/{doc['id']}", "state": "open"}
+
+
+def _decorate_notification(conn: Connection, user: Row, row: Row) -> dict | None:
+    item = row_to_dict(row)
+    item["type_label"] = NOTIFICATION_LABELS.get(item["type"], item["type"])
+    item["read"] = item["read_at"] is not None
+    if item["document_id"]:
+        doc = perm.document_by_id(conn, item["document_id"])
+        if doc is None or not perm.can_view_document(conn, user, doc):
+            return None
+        item["document_title"] = doc["title"]
+        item["title"] = f"{item['type_label']} — {doc['title']}"
+        item["action"] = _notification_action(conn, item, doc)
+        proposal = _active_proposal(conn, doc["id"])
+        current = _current_version(conn, doc)
+        item["version_label"] = _version_text(proposal, target=True) if proposal else _version_text(current)
+    else:
+        item["document_title"] = ""
+        item["action"] = {"label": "Consulter", "href": item["url"] or "#/notifications", "state": "open"}
+        item["version_label"] = ""
+    return item
+
+
+def list_notifications(conn: Connection, user: Row, filters: dict[str, Any] | None = None) -> list[dict]:
+    filters = filters or {}
+    only_unread = str(filters.get("unread", "")).lower() in ("1", "true", "yes")
+    type_filter = str(filters.get("type") or "")
+    limit = _safe_int(filters.get("limit"), 100, minimum=1, maximum=200)
     rows = conn.execute(
-        "SELECT * FROM notifications WHERE recipient_id = ? ORDER BY read_at IS NOT NULL, created_at DESC",
+        """
+        SELECT * FROM notifications
+        WHERE recipient_id = ?
+        ORDER BY read_at IS NOT NULL, created_at DESC
+        LIMIT 500
+        """,
         (user["id"],),
     ).fetchall()
-    return rows_to_dicts(rows)
+    visible = []
+    for row in rows:
+        item = _decorate_notification(conn, user, row)
+        if item is None:
+            continue
+        if only_unread and item["read"]:
+            continue
+        if type_filter and item["type"] != type_filter:
+            continue
+        visible.append(item)
+        if len(visible) >= limit:
+            break
+    return visible
+
+
+def unread_notification_count(conn: Connection, user: Row) -> int:
+    return len(list_notifications(conn, user, {"unread": "1", "limit": 200}))
 
 
 def mark_notification_read(conn: Connection, user: Row, notification_id: int) -> dict:
@@ -1346,6 +1984,129 @@ def mark_notification_read(conn: Connection, user: Row, notification_id: int) ->
             (utcnow(), notification_id, user["id"]),
         )
     return {"ok": True}
+
+
+def mark_notification_unread(conn: Connection, user: Row, notification_id: int) -> dict:
+    with transaction(conn):
+        conn.execute(
+            "UPDATE notifications SET read_at = NULL WHERE id = ? AND recipient_id = ?",
+            (notification_id, user["id"]),
+        )
+    return {"ok": True}
+
+
+def mark_all_notifications_read(conn: Connection, user: Row) -> dict:
+    now = utcnow()
+    visible = list_notifications(conn, user, {"limit": 500})
+    ids = [item["id"] for item in visible if not item["read"]]
+    if not ids:
+        return {"ok": True, "updated": 0}
+    placeholders = ",".join("?" for _ in ids)
+    with transaction(conn):
+        conn.execute(
+            f"UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE recipient_id = ? AND id IN ({placeholders})",
+            [now, user["id"], *ids],
+        )
+    return {"ok": True, "updated": len(ids)}
+
+
+def audit_detail(conn: Connection, user: Row, audit_id: int) -> dict:
+    audit = conn.execute(
+        """
+        SELECT a.*, assignee.name AS assignee_name, opener.name AS opened_by_name
+        FROM audits a
+        LEFT JOIN users assignee ON assignee.id = a.assignee_id
+        LEFT JOIN users opener ON opener.id = a.opened_by_id
+        WHERE a.id = ?
+        """,
+        (audit_id,),
+    ).fetchone()
+    if audit is None:
+        raise AppError(404, "Audit introuvable.", "not_found")
+    try:
+        doc = _document_for_action(conn, user, audit["document_id"], "view")
+    except AppError as exc:
+        if exc.status == 403:
+            raise AppError(404, "Audit introuvable.", "not_found") from exc
+        raise
+    current = _current_version(conn, doc)
+    detail = row_to_dict(audit)
+    detail["document"] = _enrich_document_item(conn, doc)
+    detail["version_examined"] = row_to_dict(current)
+    detail["checklist"] = rows_to_dicts(conn.execute("SELECT * FROM audit_checklist_items WHERE audit_id = ? ORDER BY id", (audit_id,)).fetchall())
+    detail["issues"] = rows_to_dicts(conn.execute("SELECT * FROM issues WHERE audit_id = ? ORDER BY created_at DESC", (audit_id,)).fetchall())
+    detail["plan"] = row_to_dict(conn.execute("SELECT * FROM intervention_plans WHERE audit_id = ? ORDER BY created_at DESC LIMIT 1", (audit_id,)).fetchone())
+    detail["tasks"] = rows_to_dicts(conn.execute("SELECT * FROM tasks WHERE audit_id = ? ORDER BY created_at DESC", (audit_id,)).fetchall())
+    detail["proposal"] = (
+        row_to_dict(
+            conn.execute(
+                "SELECT * FROM document_versions WHERE intervention_plan_id = ? ORDER BY created_at DESC LIMIT 1",
+                (detail["plan"]["id"],),
+            ).fetchone()
+        )
+        if detail["plan"]
+        else None
+    )
+    if audit["status"] in ("TO_DO", "IN_PROGRESS"):
+        detail["next_action"] = "Réaliser l'audit"
+    elif audit["status"] == "AWAITING_OWNER_DECISION":
+        detail["next_action"] = "Décider du traitement"
+    elif audit["status"] == "REMEDIATION_IN_PROGRESS":
+        detail["next_action"] = "Suivre l'intervention et la proposition"
+    else:
+        detail["next_action"] = "Consulter le résultat"
+    detail["progress"] = ["Revue", "Décision du owner", "Intervention si nécessaire", "Validation", "Clôture"]
+    return detail
+
+
+def list_tasks(conn: Connection, user: Row, filters: dict[str, Any] | None = None) -> dict:
+    status_filter = str((filters or {}).get("status") or "open")
+    rows = conn.execute(
+        """
+        SELECT t.*, d.title AS document_title, u.name AS assignee_name
+        FROM tasks t
+        JOIN documents d ON d.id = t.document_id
+        LEFT JOIN users u ON u.id = t.assignee_id
+        WHERE t.assignee_id = ?
+        ORDER BY t.created_at DESC
+        """,
+        (user["id"],),
+    ).fetchall()
+    items = []
+    for row in rows:
+        doc = perm.document_by_id(conn, row["document_id"])
+        if doc is None or not perm.can_view_document(conn, user, doc):
+            continue
+        if status_filter == "open" and row["status"] in ("DONE", "CANCELLED"):
+            continue
+        item = row_to_dict(row)
+        item["document"] = _enrich_document_item(conn, doc)
+        items.append(item)
+    return {"items": items, "total": len(items)}
+
+
+def list_audits(conn: Connection, user: Row, filters: dict[str, Any] | None = None) -> dict:
+    state = str((filters or {}).get("state") or "")
+    rows = conn.execute(
+        """
+        SELECT a.*, d.title AS document_title, u.name AS assignee_name
+        FROM audits a
+        JOIN documents d ON d.id = a.document_id
+        LEFT JOIN users u ON u.id = a.assignee_id
+        ORDER BY a.created_at DESC
+        """
+    ).fetchall()
+    items = []
+    for row in rows:
+        doc = perm.document_by_id(conn, row["document_id"])
+        if doc is None or not perm.can_view_document(conn, user, doc):
+            continue
+        if state == "active" and row["status"] not in ACTIVE_AUDIT_STATUSES:
+            continue
+        item = row_to_dict(row)
+        item["document"] = _enrich_document_item(conn, doc)
+        items.append(item)
+    return {"items": items, "total": len(items)}
 
 
 def admin_create_user(conn: Connection, user: Row, data: dict[str, Any], password_hash: str) -> dict:

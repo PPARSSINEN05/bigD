@@ -1,6 +1,6 @@
-# Gouvernance documentaire SD Worx - prototype fonctionnel
+# bigD — Gouvernance documentaire SD Worx
 
-Application full-stack sans dépendance externe : Python standard library, SQLite, API JSON, sessions par cookie, CSRF, interface web native et tests `unittest`.
+bigD est une application full-stack de gouvernance documentaire sans dépendance externe : Python standard library, SQLite, API JSON, sessions par cookie, CSRF, interface web native et tests `unittest`.
 
 ## Choix de stack
 
@@ -48,8 +48,11 @@ Une route API existe aussi pour le mode démonstration : `POST /api/scheduler/ru
 
 ## Périmètre livré
 
-- Catalogue documentaire filtré et paginé côté API.
-- Fiche document avec métadonnées, versions, audits, tâches, signalements, flags et historique.
+- Tableau de bord actionnable avec compteurs serveur, listes correspondantes et priorités.
+- Explorateur Documents filtré, trié, paginé côté API et protégé par permissions.
+- Fiche document avec statuts distincts publication/proposition/audit, métadonnées, versions, audits, tâches, signalements, flags et historique.
+- Notifications contextualisées avec libellés français, état lu/non lu et liens vers l'objet précis.
+- Navigation stable par URL hash : Documents, Audits, Mes tâches, Notifications et Administration.
 - Workflow `DRAFT -> CHALLENGE -> UP`, corrections, interventions bloquantes et publication atomique.
 - Versionnement initial `1.0`, edit mineur `x.y+1`, nouvelle majeure `x+1.0`, review seule sans changement de numéro.
 - Audits périodiques, copie de checklist, décision owner, plan d'intervention, clôture par validation finale.
@@ -62,6 +65,5 @@ Une route API existe aussi pour le mode démonstration : `POST /api/scheduler/ru
 - Pas de connecteur externe, pas de téléchargement ni d'analyse de fichiers.
 - Pas de restauration d'archive ni de suppression définitive.
 - Pas de relance périodique avancée des notifications.
-- L'administration est volontairement minimale pour le MVP.
+- L'administration reste volontairement minimale pour le MVP.
 - L'authentification est autonome pour le prototype ; production recommandée avec IdP ou framework maintenu.
-

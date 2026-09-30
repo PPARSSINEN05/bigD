@@ -1,4 +1,4 @@
-# Matrice des permissions
+# bigD — Matrice des permissions
 
 Refus par défaut : toute lecture et mutation vérifie le serveur.
 
@@ -25,4 +25,3 @@ Notes :
 - Une attribution de tâche ne contourne pas les accès : l'API refuse l'assignation si la personne ne peut pas lire le document.
 - Les accès exceptionnels sont enregistrés dans `document_access_grants` et tracés dans `activity_logs`.
 - La révocation d'un accès est effective dès les requêtes suivantes.
-

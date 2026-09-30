@@ -24,7 +24,7 @@ def parse_utc(value: str) -> datetime:
 
 
 def db_path_from_env() -> Path:
-    return Path(os.environ.get("DOCUMENT_GOV_DB", DEFAULT_DB_PATH))
+    return Path(os.environ.get("BIGD_DB") or os.environ.get("DOCUMENT_GOV_DB", DEFAULT_DB_PATH))
 
 
 def connect(path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
